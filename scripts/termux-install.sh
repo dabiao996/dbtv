@@ -11,6 +11,5 @@ fi
 cd "$PROJECT_DIR"
 [ -f .env ] || cp .env.example .env
 npm ci
-npm run setup
 npm run build
 npm start

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "dbtv",
+  "name": "大彪TV",
+  "adapter": "scripts/tv.mjs",
+  "defaultPort": 8787,
+  "protocol": "http",
+  "healthPath": "/api/health",
+  "commands": ["install", "start", "stop", "restart", "status", "port", "domain", "backup", "logs", "doctor", "check-update", "enable-updates", "update", "rollback", "update-history", "update-worker"],
+  "statusFormat": "--json",
+  "nonInteractivePort": "--port NUMBER",
+  "dataPolicy": "preserve",
+  "scope": "single-application"
+}

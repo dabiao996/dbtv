@@ -1,1 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 128" role="img" aria-labelledby="title"><title id="title">大彪TV</title><g fill="none" fill-rule="evenodd"><rect width="112" height="112" x="8" y="8" rx="24" fill="#E50914"/><path fill="#FFF" d="M35 31h29c25 0 41 12 41 33 0 22-16 33-41 33H35V31zm24 18v30h7c10 0 16-5 16-15 0-10-6-15-16-15h-7z"/><path fill="#111" d="m67 48 25 16-25 16z" opacity=".28"/><text x="144" y="84" fill="#F4F4F5" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif" font-size="58" font-weight="800" letter-spacing="-2">大彪</text><text x="280" y="84" fill="#E50914" font-family="Inter,-apple-system,sans-serif" font-size="58" font-weight="900" letter-spacing="-3">TV</text></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 88" role="img" aria-labelledby="title">
+  <title id="title">大彪TV</title>
+  <defs>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#253d56"/><stop offset="1" stop-color="#0a1527"/></linearGradient>
+    <linearGradient id="ice" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ddfff7"/><stop offset=".48" stop-color="#8ee5ef"/><stop offset="1" stop-color="#99aaff"/></linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d1fff9" stop-opacity=".6"/><stop offset="1" stop-color="#adc2ff" stop-opacity=".12"/></linearGradient>
+  </defs>
+  <g transform="scale(.9166667)">
+    <rect x="5" y="5" width="86" height="86" rx="25" fill="url(#glass)" stroke="url(#edge)"/>
+    <path d="M29 25h17c17 0 28 9 28 23S63 71 46 71H29V25Zm12 11v24h5c10 0 16-4 16-12s-6-12-16-12h-5Z" fill="url(#ice)" fill-rule="evenodd"/>
+    <path d="m46 40 13 8-13 8V40Z" fill="#ecfffc"/>
+    <path d="M22 19c5-3 11-4 18-4" stroke="#ddfff7" stroke-opacity=".28" stroke-width="2" stroke-linecap="round"/>
+  </g>
+  <text x="106" y="61" fill="#f0f7ff" font-family="-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif" font-size="47" font-weight="750" letter-spacing="1">大彪</text>
+  <rect x="218" y="26" width="73" height="38" rx="12" fill="#a0ddff" fill-opacity=".08" stroke="url(#edge)"/>
+  <text x="232" y="54" fill="url(#ice)" font-family="Inter,-apple-system,sans-serif" font-size="28" font-weight="800" letter-spacing="-1">TV</text>
+</svg>

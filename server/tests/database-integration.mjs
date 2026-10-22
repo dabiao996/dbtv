@@ -44,7 +44,7 @@ test('fresh SQLite deploy installs once, keeps credentials private and survives 
   const folder=mkdtempSync(join(tmpdir(),'dbtv-db-choice-test-'));
   const address=createServer();address.listen(0,'127.0.0.1');await once(address,'listening');
   const port=address.address().port;await new Promise(resolve=>address.close(resolve));
-  const env={...process.env,DATABASE_PROVIDER:'sqlite',DATABASE_URL:`file:${join(folder,'fresh.db')}`,NODE_ENV:'production',HOST:'127.0.0.1',PORT:String(port)};
+  const env={...process.env,DBTV_DATA_DIR:join(folder,'state'),INSTALL_TOKEN:'fixture-install-token-0123456789abcdef',DATABASE_PROVIDER:'sqlite',DATABASE_URL:`file:${join(folder,'fresh.db')}`,NODE_ENV:'production',HOST:'127.0.0.1',PORT:String(port)};
   let child;
   async function start(){
     child=spawn(process.execPath,['server/dist/index.js'],{env,stdio:'ignore'});
@@ -63,7 +63,7 @@ test('fresh SQLite deploy installs once, keeps credentials private and survives 
     assert.equal(status.installed,false);assert.equal(status.database.provider,'sqlite');
     assert.equal(status.database.connected,true);assert.equal('url' in status.database,false);
     assert.equal(JSON.stringify(status).includes(folder),false);
-    const send=body=>fetch(`http://127.0.0.1:${port}/api/install`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const send=body=>fetch(`http://127.0.0.1:${port}/api/install`,{method:'POST',headers:{'Content-Type':'application/json','X-Install-Token':env.INSTALL_TOKEN},body:JSON.stringify(body)});
     assert.equal((await send({username:'admin',password:'short',confirmPassword:'short'})).status,400);
     const installed=await send({username:'fixture_admin',password:'fixture-password-123',confirmPassword:'fixture-password-123',DATABASE_URL:'mysql://attacker:secret@attacker.invalid/other'});
     assert.equal(installed.status,201);

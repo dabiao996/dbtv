@@ -1,0 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {generateKeyPairSync,createHash} from 'node:crypto';
+const [privateName,publicName='deploy/update-public.pem']=process.argv.slice(2);
+if(!privateName)throw Error('用法：node scripts/release-keys.mjs 项目外的私钥绝对路径 [公钥路径]；私钥只能保存到GitHub Actions Secret或安全离线位置');
+const secret=path.resolve(privateName),visible=path.resolve(publicName),root=process.cwd();
+if(!path.isAbsolute(privateName)||secret===root||secret.startsWith(root+path.sep)||secret===visible)throw Error('私钥必须保存到项目之外，禁止提交到Git');
+if(fs.existsSync(secret)||fs.existsSync(visible))throw Error('目标已有文件，拒绝覆盖更新信任密钥');
+const keys=generateKeyPairSync('ed25519',{privateKeyEncoding:{type:'pkcs8',format:'pem'},publicKeyEncoding:{type:'spki',format:'pem'}});
+fs.mkdirSync(path.dirname(secret),{recursive:true,mode:0o700});fs.mkdirSync(path.dirname(visible),{recursive:true});
+fs.writeFileSync(secret,keys.privateKey,{mode:0o600,flag:'wx'});fs.writeFileSync(visible,keys.publicKey,{mode:0o644,flag:'wx'});
+console.log(`已生成发行签名密钥；仅公钥可提交Git。公钥指纹：${createHash('sha256').update(keys.publicKey.trim()).digest('hex')}`);

@@ -8,9 +8,10 @@ services:
       DATABASE_PROVIDER: ${DATABASE_PROVIDER:-}
       DATABASE_URL: ${DATABASE_URL:-file:/app/data/dabiao.db}
       HOST: 0.0.0.0
+      DBTV_DATA_DIR: /app/data
       PORT: 8787
     ports:
-      - "8787:8787"
+      - "${DBTV_BIND_IP:-127.0.0.1}:${DBTV_PORT:-8787}:8787"
     volumes:
       - dabiao_data:/app/data
 

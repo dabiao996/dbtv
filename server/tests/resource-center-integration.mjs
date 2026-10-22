@@ -11,9 +11,9 @@ import {PrismaClient} from '@prisma/client';
 test('real database resource catalog is read-only until publication and downlisting revokes public access without deleting data',async()=>{
   const folder=mkdtempSync(join(tmpdir(),'dbtv-resource-center-')),url=`file:${join(folder,'test.db')}`;
   const socket=createServer();socket.listen(0,'127.0.0.1');await once(socket,'listening');const port=socket.address().port;await new Promise(resolve=>socket.close(resolve));
-  const env={...process.env,DATABASE_PROVIDER:'sqlite',DATABASE_URL:url,NODE_ENV:'production',HOST:'127.0.0.1',PORT:String(port)};
+  const env={...process.env,DBTV_DATA_DIR:join(folder,'state'),INSTALL_TOKEN:'fixture-install-token-0123456789abcdef',DATABASE_PROVIDER:'sqlite',DATABASE_URL:url,NODE_ENV:'production',HOST:'127.0.0.1',PORT:String(port)};
   const db=new PrismaClient({datasourceUrl:url});let server;
-  const call=async(path,body,cookie='',method=body===undefined?'GET':'POST')=>{const r=await fetch(`http://127.0.0.1:${port}/api${path}`,{method,headers:{'Content-Type':'application/json',...cookie?{Cookie:cookie}:{}},...body===undefined?{}:{body:JSON.stringify(body)}});return {status:r.status,data:await r.json(),cookie:r.headers.get('set-cookie')?.split(';')[0]};};
+  const call=async(path,body,cookie='',method=body===undefined?'GET':'POST')=>{const r=await fetch(`http://127.0.0.1:${port}/api${path}`,{method,headers:{...path==='/install'?{'X-Install-Token':env.INSTALL_TOKEN}:{},'Content-Type':'application/json',...cookie?{Cookie:cookie}:{}},...body===undefined?{}:{body:JSON.stringify(body)}});return {status:r.status,data:await r.json(),cookie:r.headers.get('set-cookie')?.split(';')[0]};};
   try{
     const push=spawnSync(process.execPath,['scripts/database.mjs','push'],{env,encoding:'utf8'});assert.equal(push.status,0,push.stdout+push.stderr);
     server=spawn(process.execPath,['server/dist/index.js'],{env,stdio:'ignore'});

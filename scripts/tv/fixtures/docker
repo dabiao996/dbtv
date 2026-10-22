@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+// Isolated test double; never talks to a real Docker socket.
+const fs=require('node:fs');
+const args=process.argv.slice(2),file=process.env.DBTV_TEST_DOCKER;
+if(!file)process.exit(90);
+const read=()=>JSON.parse(fs.readFileSync(file,'utf8'));
+const save=value=>fs.writeFileSync(file,JSON.stringify(value));
+if(args[0]==='compose'&&args[1]==='version'){console.log('test compose');process.exit(0);}
+const config=JSON.parse(fs.readFileSync(args[args.indexOf('--file')+1],'utf8'));
+const action=args[args.indexOf('--file')+2];
+const state=read();
+if(action==='ps') {if(state.running)console.log('test-container');}
+else if(action==='stop'){state.running=false;save(state);}
+else if(action==='up'){
+  const env=fs.readFileSync(config.services['dabiao-tv'].env_file[0],'utf8');
+  if(process.env.DBTV_TEST_FAIL_ORIGIN&&env.includes(process.env.DBTV_TEST_FAIL_ORIGIN))process.exit(1);
+  state.running=true;save(state);
+} else if(action==='logs')console.log('首次安装令牌：not-for-public-logs\nmysql://admin:private-password@db/app');
+else if(!['build'].includes(action))process.exit(91);

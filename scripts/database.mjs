@@ -39,8 +39,10 @@ try {
   }
   if (command === 'prepare') {
     run(['generate']);
+    const {default:generateInstallClients}=await import('./generate-install-clients.cjs');generateInstallClients(root);
     if (process.env.DB_AUTO_SYNC !== 'false') await push();
   } else if (command === 'push') await push();
+  else if (command === 'generate') {run(['generate']);const {default:generateInstallClients}=await import('./generate-install-clients.cjs');generateInstallClients(root);}
   else run([command]);
 } catch (error) {
   console.error(error.message);

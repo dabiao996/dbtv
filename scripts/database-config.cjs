@@ -45,6 +45,8 @@ function renderSchema(source, provider) {
 
 function applyDatabaseEnvironment(root = process.cwd()) {
   loadEnvironment(root);
+  const choice = require('./web-database.cjs').readChoice(root);
+  if (choice) {process.env.DATABASE_PROVIDER = choice.provider;process.env.DATABASE_URL = choice.url;}
   const config = databaseConfig(process.env, root);
   process.env.DATABASE_PROVIDER = config.provider;
   process.env.DATABASE_URL = config.url;

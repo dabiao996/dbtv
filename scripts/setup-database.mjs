@@ -12,6 +12,8 @@ export function updateEnv(source, provider, url) {
 }
 
 async function main() {
+  const {default:webDatabase}=await import('./web-database.cjs');
+  if(webDatabase.readChoice())throw Error('本机已通过网页安装，数据库选择已锁定；切库请先备份并按 docs/DATABASES.md 审核迁移，不直接覆盖连接');
   if (!process.stdin.isTTY) throw Error('交互配置需要终端；无人值守部署请编辑 .env 的 DATABASE_PROVIDER 和 DATABASE_URL');
   let muted = false;
   const output = new Writable({write(chunk, _encoding, done) {if (!muted) process.stdout.write(chunk); done();}});

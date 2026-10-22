@@ -1,4 +1,9 @@
 node_modules/
+release-artifacts/
+*.key
+*.pem
+!deploy/update-public.pem
+data/
 .generated/
 .env.setup-*.tmp
 backups/
@@ -11,6 +16,8 @@ output/
 *.log
 .DS_Store
 *.db
+*.sqlite
+*.sqlite3
 *.db-journal
 *.db-shm
 *.db-wal

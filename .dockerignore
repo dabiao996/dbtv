@@ -1,4 +1,11 @@
 .git
+.github
+release-artifacts
+**/*.key
+**/*.pem
+!deploy/update-public.pem
+**/*.sqlite
+**/*.sqlite3
 .env
 .env.*
 !.env.example

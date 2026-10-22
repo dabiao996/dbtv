@@ -12,11 +12,11 @@ import {PrismaClient} from '@prisma/client';
 test('real HTTP membership flow enforces privileges, source restrictions, expiry, CSRF and private wallets',async()=>{
   const folder=mkdtempSync(join(tmpdir(),'dbtv-membership-api-')),url=`file:${join(folder,'test.db')}`;
   const listener=createServer();listener.listen(0,'127.0.0.1');await once(listener,'listening');const port=listener.address().port;await new Promise(resolve=>listener.close(resolve));
-  const env={...process.env,DATABASE_PROVIDER:'sqlite',DATABASE_URL:url,NODE_ENV:'production',HOST:'127.0.0.1',PORT:String(port)};
+  const env={...process.env,DBTV_DATA_DIR:join(folder,'state'),INSTALL_TOKEN:'fixture-install-token-0123456789abcdef',DATABASE_PROVIDER:'sqlite',DATABASE_URL:url,NODE_ENV:'production',HOST:'127.0.0.1',PORT:String(port)};
   const db=new PrismaClient({datasourceUrl:url});let server;
   let adminCookie='',userCookie='';
   async function call(path,{body,cookie,method,origin}={}){
-    const response=await fetch(`http://127.0.0.1:${port}/api${path}`,{method:method||(body===undefined?'GET':'POST'),headers:{...body===undefined?{}:{'Content-Type':'application/json'},...cookie?{Cookie:cookie}:{},...origin?{Origin:origin}:{}},...body===undefined?{}:{body:JSON.stringify(body)}});
+    const response=await fetch(`http://127.0.0.1:${port}/api${path}`,{method:method||(body===undefined?'GET':'POST'),headers:{...path==='/install'?{'X-Install-Token':env.INSTALL_TOKEN}:{},...body===undefined?{}:{'Content-Type':'application/json'},...cookie?{Cookie:cookie}:{},...origin?{Origin:origin}:{}},...body===undefined?{}:{body:JSON.stringify(body)}});
     const data=await response.json();return {status:response.status,data,cookie:response.headers.get('set-cookie')?.split(';')[0]};
   }
   try{

@@ -20,13 +20,13 @@ test('real HTTP source and category pages handle fixed JSON/XML upstream sizes a
   });
   upstream.listen(0,'127.0.0.1');await once(upstream,'listening');const origin='http://127.0.0.1:'+upstream.address().port;
   const portProbe=createServer();portProbe.listen(0,'127.0.0.1');await once(portProbe,'listening');const port=portProbe.address().port;await new Promise(resolve=>portProbe.close(resolve));
-  const env={...process.env,DATABASE_PROVIDER:'sqlite',DATABASE_URL:url,HOST:'127.0.0.1',PORT:String(port),NODE_ENV:'production'};
+  const env={...process.env,DBTV_DATA_DIR:join(folder,'state'),INSTALL_TOKEN:'fixture-install-token-0123456789abcdef',DATABASE_PROVIDER:'sqlite',DATABASE_URL:url,HOST:'127.0.0.1',PORT:String(port),NODE_ENV:'production'};
   let cookie='';const call=async path=>{const response=await fetch('http://127.0.0.1:'+port+'/api'+path,{headers:{Cookie:cookie}});const body=await response.json();assert.equal(response.status,200,JSON.stringify(body));return body};
   try{
     const pushed=spawnSync(process.execPath,['scripts/database.mjs','push'],{env,encoding:'utf8'});assert.equal(pushed.status,0,pushed.stdout+pushed.stderr);
     child=spawn(process.execPath,['server/dist/index.js'],{env,stdio:'ignore'});
     for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:'+port+'/api/health')).ok)break}catch{}await new Promise(resolve=>setTimeout(resolve,100))}
-    const installed=await fetch('http://127.0.0.1:'+port+'/api/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'fixture_admin',password:'abc123',confirmPassword:'abc123'})});assert.equal(installed.status,201);cookie=installed.headers.get('set-cookie').split(';')[0];
+    const installed=await fetch('http://127.0.0.1:'+port+'/api/install',{method:'POST',headers:{'Content-Type':'application/json','X-Install-Token':env.INSTALL_TOKEN},body:JSON.stringify({username:'fixture_admin',password:'abc123',confirmPassword:'abc123'})});assert.equal(installed.status,201);cookie=installed.headers.get('set-cookie').split(';')[0];
     await db.source.createMany({data:[{key:'json',name:'固定20条JSON源',type:'tvbox-json',api:origin+'/json'},{key:'xml',name:'固定7条XML源',type:'tvbox-json',api:origin+'/xml'},{key:'local',name:'本地片库',type:'local',api:'local'}]});
     await db.video.createMany({data:Array.from({length:137},(_,index)=>({id:'local:'+index,sourceKey:'local',title:'本地测试影片'+index,category:'动作片',area:'中国大陆',language:'汉语普通话',year:2026}))});
     for(const source of ['json','xml','local'])for(const pageSize of [24,48,96])for(const browse of [false,true]){
