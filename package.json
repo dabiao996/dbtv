@@ -1,6 +1,6 @@
 {
   "name": "web-tvbox",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "scripts": {
     "tv": "node scripts/tv.mjs",
@@ -28,6 +28,13 @@
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.8.2"
+  },
+  "overrides": {
+    "proxy-addr": "2.0.8",
+    "@prisma/config": {
+      "deepmerge-ts": "8.0.0",
+      "effect": "3.20.0"
+    }
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

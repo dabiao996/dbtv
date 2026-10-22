@@ -1,6 +1,6 @@
 # 大彪TV
 
-正式仓库：[dabiao996/dbtv](https://github.com/dabiao996/dbtv)。首个正式版本：**v1.0.0**。下载与更新请以本仓库的 [Releases](https://github.com/dabiao996/dbtv/releases) 为准，功能与验证范围见 [版本记录](CHANGELOG.md)。
+正式仓库：[dabiao996/dbtv](https://github.com/dabiao996/dbtv)。当前主分支为 **1.0.1 开发版（尚未正式发布）**。`v1.0.0` 因依赖安全告警已撤出稳定版，暂不建议新安装；修复源码已在主分支完成验证。目前暂停发布正式包，之后以本仓库的 [Releases](https://github.com/dabiao996/dbtv/releases) 为准，功能与验证范围见 [版本记录](CHANGELOG.md)。
 
 一个支持 Termux、普通 Linux、宝塔和 1Panel 的网页版 TVBox。部署时可选 SQLite、MySQL、PostgreSQL；使用 SQLite 时，手机即可独立运行前端、Express 后端和数据库，电视、电脑或其他手机可以通过同一 Wi-Fi 访问。
 

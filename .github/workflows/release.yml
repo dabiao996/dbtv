@@ -27,6 +27,8 @@ jobs:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: node scripts/release-build.mjs prepare
       - run: npm ci
+      - name: Check dependency advisories
+        run: npm audit --audit-level=high
       - run: npm run lint && npm run build && npm test && npm run test:deploy && node --test server/tests/*integration.mjs
       - run: node scripts/release-build.mjs archive
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
