@@ -1,6 +1,6 @@
 # 大彪TV
 
-正式仓库：[dabiao996/dbtv](https://github.com/dabiao996/dbtv)。当前主分支为 **1.0.1 开发版（尚未正式发布）**。`v1.0.0` 的 GitHub 发布、下载附件和标签已删除；修复源码已在主分支完成验证。目前没有正式发布包，之后以本仓库的 [Releases](https://github.com/dabiao996/dbtv/releases) 为准，功能与验证范围见 [版本记录](CHANGELOG.md)。
+正式仓库：[dabiao996/dbtv](https://github.com/dabiao996/dbtv)。当前源码版本为 **1.0.1**；可安装的正式版本以本仓库的 [Releases](https://github.com/dabiao996/dbtv/releases) 为准。`v1.0.0` 的 GitHub 发布、下载附件和标签已删除；功能与验证范围见 [版本记录](CHANGELOG.md)。
 
 一个支持 Termux、普通 Linux、宝塔和 1Panel 的网页版 TVBox。部署时可选 SQLite、MySQL、PostgreSQL；使用 SQLite 时，手机即可独立运行前端、Express 后端和数据库，电视、电脑或其他手机可以通过同一 Wi-Fi 访问。
 
@@ -23,7 +23,7 @@
 
 会员与积分操作说明见 [会员系统说明](docs/MEMBERSHIP.md)。用户入口 `/membership`，后台入口 `/admin/membership`。升级前备份数据库；积分与会员数据保存在部署时选择的数据库里，不属于公开源码。
 
-电视直播入口 `/live`，后台 `/admin/live`；管理员首次导入后使用，支持每日目录更新。直播中转会消耗服务器流量，具体限制、安全与备份说明见 [全球电视直播](docs/LIVE-TV.md)。
+电视直播入口 `/live`，后台 `/admin/live`；项目持久数据目录的私有 `data/live-tv.json` 保存订阅定义和已展开的频道，数据库用于查询缓存。自动更新默认关闭；直播中转会消耗服务器流量。配置、迁移、安全与备份说明见 [全球电视直播](docs/LIVE-TV.md)。
 
 ## 项目结构
 

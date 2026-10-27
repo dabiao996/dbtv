@@ -1,9 +1,11 @@
 import type {Express} from 'express';
 import {createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
+import {unlinkSync} from 'node:fs';
 import {buildLiveCatalog,LIVE_CATALOG,LIVE_METADATA,liveCategories,readLiveLines,publicHttpUrl} from './live-catalog.js';
 import {liveFetch} from './live-network.js';
 import {LiveError,liveError,assertLiveManifest,checkLiveChannel} from './live-health.js';
 import {mergeLiveSupplements} from './live-supplements.js';
+import {liveFilePath,readLiveFile,replaceLiveCache,writeLiveFile,type LiveFile,type LiveFileChannel} from './live-file.js';
 
 const stateKey='live:subscription';
 export const countryName=(code:string)=>{try{return code==='ZZ'?'未标注地区':new Intl.DisplayNames(['zh-CN'],{type:'region'}).of(code)||code;}catch{return code;}};
@@ -25,18 +27,51 @@ export function rewriteLiveManifest(text:string,base:string,link:(url:string)=>s
   const rewrite=(value:string)=>{const url=publicHttpUrl(new URL(value,base).href);if(!url)throw Error('直播包含不安全地址');return link(url);};
   return text.split(/\r?\n/).map(line=>line.startsWith('#')?line.replace(/URI="([^"\r\n]+)"/g,(_m,value)=>`URI="${rewrite(value)}"`):line.trim()?rewrite(line.trim()):line).join('\n');
 }
-export function createLiveService(db:any,request=liveFetch){
+export function createLiveService(db:any,request=liveFetch,root:string|null=request===liveFetch?process.cwd():null){
   let running:Promise<void>|null=null,phase='idle',error='';
+  let file:LiveFile|null=null,fileError='',modifying=false;
+  const ready=(async()=>{try{if(root)file=readLiveFile(root);if(file)await replaceLiveCache(db,file);}catch{fileError='直播 JSON 无效或无法载入；频道缓存未改动，请检查 live-tv.json';phase='error';}})();
+  const ensureFile=()=>{if(fileError)throw Object.assign(Error(fileError),{status:503});};
   const state=async()=>{try{return JSON.parse((await db.setting.findUnique({where:{key:stateKey}}))?.value||'{}');}catch{return {};}};
+  async function updateFile(next:LiveFile,change:()=>Promise<void>){
+    const previous=file!;
+    writeLiveFile(next,root!);
+    try{await change();file=next;}
+    catch(error){try{writeLiveFile(previous,root!);}catch{fileError='直播 JSON 写入后数据库更新失败，请重启服务从 JSON 恢复';}throw error;}
+  }
   async function sync(actorId?:number){
-    if(running)throw Object.assign(Error('直播目录正在更新'),{status:409});
+    await ready;ensureFile();
+    if(running||modifying)throw Object.assign(Error('直播目录正在更新'),{status:409});
     error='';phase='downloading';
     running=(async()=>{
-      const [list,info]=await Promise.all([request(LIVE_CATALOG,12*1024*1024),request(LIVE_METADATA,16*1024*1024)]);
-      const imported=buildLiveCatalog(list.body.toString('utf8'),JSON.parse(info.body.toString('utf8')));
+      const sources=file?.sources||[{id:'iptv-org',name:'IPTV-org',playlistUrl:LIVE_CATALOG,metadataUrl:LIVE_METADATA}];
+      const imported=(await Promise.all(sources.map(async source=>{
+        const [list,info]=await Promise.all([request(source.playlistUrl,12*1024*1024),source.metadataUrl?request(source.metadataUrl,16*1024*1024):Promise.resolve(null)]);
+        return buildLiveCatalog(list.body.toString('utf8'),info?JSON.parse(info.body.toString('utf8')):[]);
+      }))).flat();
       if(!imported.length)throw Error('目录为空，保留原频道');
-      const rows=mergeLiveSupplements(imported);
+      const merged=new Map<string,(typeof imported)[number]>();
+      for(const row of imported){const previous=merged.get(row.id);if(!previous){merged.set(row.id,row);continue;}
+        const lines=readLiveLines(previous),seen=new Set(lines.map(line=>line.url));
+        for(const line of readLiveLines(row))if(lines.length<30&&!seen.has(line.url)){lines.push(line);seen.add(line.url);}
+        previous.rawConfig=JSON.stringify(lines);
+      }
+      const rows=mergeLiveSupplements([...merged.values()]);
       phase='saving';const previous=await state();
+      if(file||root&&request===liveFetch&&await db.liveChannel.count()===0){
+        const base:LiveFile=file||{version:1,sources,autoUpdate:false,lastUpdatedAt:null,channels:[]};
+        const existing=new Map(base.channels.map(channel=>[channel.id,channel]));
+        const channels=new Map(base.channels.map(channel=>[channel.id,{...channel,available:false}]));
+        for(const row of rows){const old=existing.get(row.id);const channel:LiveFileChannel={
+          id:row.id,name:row.name,country:row.country,categories:JSON.parse(row.tags),cover:row.cover,
+          lines:readLiveLines(row),enabled:old?.enabled??true,available:true,
+        };channels.set(row.id,channel);}
+        const next:LiveFile={...base,lastUpdatedAt:new Date().toISOString(),channels:[...channels.values()]};
+        const change=async()=>replaceLiveCache(db,next,{userId:actorId||null,action:'live.sync',detail:JSON.stringify({imported:rows.length,provider:sources.map(source=>source.id)})});
+        if(file)await updateFile(next,change);
+        else{writeLiveFile(next,root!);try{await change();file=next;}catch(error){unlinkSync(liveFilePath(root!));throw error;}}
+        return;
+      }
       await db.$transaction(async(tx:any)=>{
         const previousLines=new Map((await tx.liveChannel.findMany({select:{id:true,rawConfig:true}})).map((row:any)=>[row.id,row.rawConfig]));
         await tx.liveChannel.updateMany({data:{available:false}});
@@ -49,19 +84,30 @@ export function createLiveService(db:any,request=liveFetch){
     })().then(()=>{phase='idle';}).catch(()=>{error='更新失败，原有频道和上下架设置已保留，请稍后重试';phase='error';}).finally(()=>{running=null;});
     return {ok:true};
   }
-  async function status(){return {...await state(),phase,error,busy:!!running,provider:'IPTV-org',playlist:LIVE_CATALOG,total:await db.liveChannel.count(),published:await db.liveChannel.count({where:{enabled:true,available:true}})};}
-  async function scheduled(){const config=await state();if(running||!config.lastUpdatedAt||config.autoUpdate===false||Date.now()-Date.parse(config.lastUpdatedAt)<86400000)return;await sync();}
-  return {sync,status,scheduled,settled:()=>running};
+  async function status(){await ready;return {...await state(),...file?{autoUpdate:file.autoUpdate,lastUpdatedAt:file.lastUpdatedAt}:fileError?{autoUpdate:false}:{},phase:fileError?'error':phase,error:fileError||error,fileError:!!fileError,busy:!!running,provider:file?.sources.map(source=>source.name).join('、')||'IPTV-org',fileConfigured:!!file,total:await db.liveChannel.count(),published:await db.liveChannel.count({where:{enabled:true,available:true}})};}
+  async function scheduled(){await ready;if(fileError)return;const config=file||await state();if(running||!config.lastUpdatedAt||config.autoUpdate===false||Date.now()-Date.parse(config.lastUpdatedAt)<86400000)return;await sync();}
+  async function updateSubscription(autoUpdate:boolean){await ready;ensureFile();if(running||modifying)throw Object.assign(Error('直播目录正在更新'),{status:409});
+    modifying=true;try{if(file){const next={...file,autoUpdate};await updateFile(next,async()=>{const value=JSON.stringify({autoUpdate,lastUpdatedAt:next.lastUpdatedAt,imported:next.channels.length});await db.setting.upsert({where:{key:stateKey},create:{key:stateKey,value},update:{value}});});}
+      else{const current=await state(),value=JSON.stringify({...current,autoUpdate});await db.setting.upsert({where:{key:stateKey},create:{key:stateKey,value},update:{value}});}}
+    finally{modifying=false;}}
+  async function publish(where:any,enabled:boolean,actorId?:number){await ready;ensureFile();if(running||modifying)throw Object.assign(Error('直播目录正在更新'),{status:409});
+    modifying=true;try{if(file){const ids=new Set<string>((await db.liveChannel.findMany({where,select:{id:true}})).map((row:any)=>row.id));
+        const next={...file,channels:file.channels.map(channel=>ids.has(channel.id)?{...channel,enabled}:channel)};
+        let count=0;await updateFile(next,async()=>{await db.$transaction(async(tx:any)=>{const result=await tx.liveChannel.updateMany({where,data:{enabled}});count=result.count;await tx.adminLog.create({data:{userId:actorId||null,action:'live.publication',detail:JSON.stringify({enabled,count})}});});});return count;}
+      const result=await db.$transaction(async(tx:any)=>{const changed=await tx.liveChannel.updateMany({where,data:{enabled}});await tx.adminLog.create({data:{userId:actorId||null,action:'live.publication',detail:JSON.stringify({enabled,count:changed.count})}});return changed;});return result.count;
+    }finally{modifying=false;}}
+  return {sync,status,scheduled,ready,updateSubscription,publish,settled:()=>running};
 }
 
-export function registerLive(app:Express,db:any,deps:{requireUser:any;requireAdmin:any},request=liveFetch){
-  const service=createLiveService(db,request),secret=randomBytes(32);let active=0;
+export function registerLive(app:Express,db:any,deps:{requireUser:any;requireAdmin:any},request=liveFetch,root:string|null=request===liveFetch?process.cwd():null){
+  const service=createLiveService(db,request,root),secret=randomBytes(32);let active=0;
   const userActive=new Map<number,number>(),checkTimes=new Map<string,number>();
   const handle=(fn:any)=>async(req:any,res:any)=>{try{await fn(req,res);}catch(error:any){if(!res.headersSent){const safe=liveError(error);res.status(error.status||502).json({error:error.status?error.message:safe.message,code:error.status?'REQUEST_REJECTED':safe.code});}}};
   const access=async(req:any,res:any)=>{const user=await deps.requireUser(req,res);if(!user)return null;if(user.role!=='admin'&&!user.permissions?.includes('playback')){res.status(403).json({error:'当前会员没有播放权限'});return null;}return user;};
-  const getChannel=async(id:string,admin=false)=>db.liveChannel.findFirst({where:{id,...admin?{}:{enabled:true,available:true}}});
+  const getChannel=async(id:string,admin=false)=>{await service.ready;return db.liveChannel.findFirst({where:{id,...admin?{}:{enabled:true,available:true}}});};
   const summary=(row:any,admin=false)=>{const lines=readLiveLines(row);return {id:row.id,name:row.name,country:row.country,countryName:countryName(row.country),categories:JSON.parse(row.tags),cover:row.cover,lineCount:lines.length,browserLines:lines.filter(x=>!x.restricted).length,lastCheckedAt:row.lastCheckedAt,lastError:row.lastError,health:!row.lastCheckedAt?'unchecked':row.lastError?'failed':'reachable',...admin?{enabled:row.enabled,available:row.available}:{}};};
   async function listing(req:any,res:any,admin=false){
+    await service.ready;
     const where=liveWhere(req.query,admin),page=Math.max(1,Math.min(100000,Number.parseInt(String(req.query.page))||1)),pageSize=Math.max(1,Math.min(96,Number.parseInt(String(req.query.pageSize))||48));
     const [total,rows]=await Promise.all([db.liveChannel.count({where}),db.liveChannel.findMany({where,orderBy:[{country:'asc'},{name:'asc'},{id:'asc'}],skip:(page-1)*pageSize,take:pageSize})]);
     res.json({items:rows.map((row:any)=>summary(row,admin)),total,page,pageSize,pages:Math.ceil(total/pageSize)});
@@ -72,14 +118,13 @@ export function registerLive(app:Express,db:any,deps:{requireUser:any;requireAdm
   app.put('/api/admin/live/subscription',handle(async(req:any,res:any)=>{
     if((await service.status()).busy)return res.status(409).json({error:'请等待当前目录更新完成后修改订阅'});
     if(typeof req.body?.autoUpdate!=='boolean'||Object.keys(req.body).some(key=>key!=='autoUpdate'))return res.status(400).json({error:'订阅设置无效'});
-    const current=await db.setting.findUnique({where:{key:stateKey}});const value=JSON.stringify({...JSON.parse(current?.value||'{}'),autoUpdate:req.body.autoUpdate});
-    await db.setting.upsert({where:{key:stateKey},create:{key:stateKey,value},update:{value}});res.json({ok:true});
+    await service.updateSubscription(req.body.autoUpdate);res.json({ok:true});
   }));
   app.get('/api/admin/live/channels',handle((req:any,res:any)=>listing(req,res,true)));
   app.put('/api/admin/live/publication',handle(async(req:any,res:any)=>{
     const body=req.body||{};if(typeof body.enabled!=='boolean'||Object.keys(body).some(key=>!['enabled','ids','filter'].includes(key))||body.ids!==undefined&&(!Array.isArray(body.ids)||!body.ids.length||body.ids.length>96||body.ids.some((id:any)=>typeof id!=='string'||!/^[a-f0-9]{32}$/.test(id)))||body.ids===undefined&&(!body.filter||typeof body.filter!=='object'||Array.isArray(body.filter)))return res.status(400).json({error:'请选择频道或确认筛选范围'});
     const where=body.ids?{id:{in:body.ids}}:liveWhere(body.filter,true);
-    const result=await db.$transaction(async(tx:any)=>{const r=await tx.liveChannel.updateMany({where,data:{enabled:body.enabled}});await tx.adminLog.create({data:{userId:req.authUser?.id,action:'live.publication',detail:JSON.stringify({enabled:body.enabled,count:r.count})}});return r;});res.json({ok:true,count:result.count});
+    const count=await service.publish(where,body.enabled,req.authUser?.id);res.json({ok:true,count});
   }));
   app.post('/api/admin/live/channels/:id/check',handle(async(req:any,res:any)=>{
     const row=await getChannel(req.params.id,true);if(!row)return res.status(404).json({error:'频道不存在'});

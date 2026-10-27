@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "iptv-org",
+      "name": "IPTV-org",
+      "playlistUrl": "https://iptv-org.github.io/iptv/index.m3u",
+      "metadataUrl": "https://iptv-org.github.io/api/channels.json"
+    }
+  ],
+  "autoUpdate": false,
+  "lastUpdatedAt": null,
+  "channels": []
+}

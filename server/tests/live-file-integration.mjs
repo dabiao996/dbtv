@@ -1,0 +1,75 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {spawnSync} from 'node:child_process';
+import {once} from 'node:events';
+import express from 'express';
+import {PrismaClient} from '@prisma/client';
+import {createLiveService,registerLive} from '../dist/live.js';
+import {readLiveFile,writeLiveFile} from '../dist/live-file.js';
+
+test('project live JSON restores the cache and retains publication across refresh and restart',async()=>{
+  const root=mkdtempSync(join(tmpdir(),'dbtv-live-json-'));
+  const url='file:'+join(root,'test.db');
+  const env={...process.env,DATABASE_PROVIDER:'sqlite',DATABASE_URL:url,DBTV_DATA_DIR:join(root,'state')};
+  const pushed=spawnSync(process.execPath,['scripts/database.mjs','push'],{env,encoding:'utf8'});
+  assert.equal(pushed.status,0,pushed.stdout+pushed.stderr);
+  const db=new PrismaClient({datasourceUrl:url});
+  const firstId=createHash('sha256').update('Demo.us').digest('hex').slice(0,32);
+  const source={id:'fixture',name:'Fixture',playlistUrl:'https://example.org/demo.m3u',metadataUrl:'https://example.org/demo.json'};
+  const channel=(id,name,enabled=true)=>({id,name,country:'US',categories:['news'],cover:null,lines:[{url:'https://example.org/'+id+'.m3u8',name,restricted:false}],enabled,available:true});
+  const initial={version:1,sources:[source],autoUpdate:false,lastUpdatedAt:null,channels:[channel(firstId,'Demo',false),channel('b'.repeat(32),'Old channel')]};
+  const request=async location=>({body:Buffer.from(location.endsWith('.json')?JSON.stringify([{id:'Demo.us',name:'Demo',country:'US',categories:['news']}]):'#EXTM3U\n#EXTINF:-1 tvg-id="Demo.us",Demo\nhttps://example.org/demo.m3u8\n')});
+  try{
+    writeLiveFile(initial,root);
+    let service=createLiveService(db,request,root);await service.ready;
+    assert.equal((await service.status()).total,2);
+    assert.equal((await service.status()).autoUpdate,false);
+    await service.sync();await service.settled();
+    let file=readLiveFile(root);
+    const total=file.channels.length;
+    assert(total>=2);
+    assert.equal(file.channels.find(row=>row.id===firstId).enabled,false);
+    assert.equal(file.channels.find(row=>row.id==='b'.repeat(32)).available,false);
+    await service.sync();await service.settled();
+    assert.equal(readLiveFile(root).channels.length,total);
+    assert.equal(await service.publish({id:firstId},true),1);
+    assert.equal(readLiveFile(root).channels.find(row=>row.id===firstId).enabled,true);
+    await service.updateSubscription(false);
+    service=createLiveService(db,request,root);await service.ready;
+    assert.equal(await db.liveChannel.count(),total);
+    assert.equal(await db.liveChannel.count({where:{enabled:true,available:true}}),readLiveFile(root).channels.filter(row=>row.enabled&&row.available).length);
+    assert.equal((await service.status()).autoUpdate,false);
+    const app=express();app.use(express.json());
+    const admin={id:1,role:'admin',permissions:['playback']};
+    registerLive(app,db,{requireUser:async()=>admin,requireAdmin:async()=>admin},request,root);
+    const server=app.listen(0,'127.0.0.1');await once(server,'listening');
+    const origin='http://127.0.0.1:'+server.address().port;
+    try{
+      const listed=await (await fetch(origin+'/api/live/channels?country=US&category=news')).json();
+      assert.equal(listed.total,1);
+      assert.equal(listed.items[0].name,'Demo');
+      const response=await fetch(origin+'/api/admin/live/publication',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:false,ids:[firstId]})});
+      assert.equal(response.status,200);
+      assert.equal((await response.json()).count,1);
+      assert.equal(readLiveFile(root).channels.find(row=>row.id===firstId).enabled,false);
+      const hidden=await (await fetch(origin+'/api/admin/live/channels?state=hidden')).json();
+      assert(hidden.items.some(row=>row.id===firstId));
+    }finally{await new Promise(resolve=>server.close(resolve));}
+    const before=readFileSync(join(root,'data','live-tv.json'));
+    assert.throws(()=>writeLiveFile({...file,channels:[{id:'bad'}]},root));
+    assert.deepEqual(readFileSync(join(root,'data','live-tv.json')),before);
+    writeLiveFile({...readLiveFile(root),channels:[]},root);
+    const empty=createLiveService(db,request,root);await empty.ready;
+    assert.equal((await empty.status()).fileError,true);
+    assert.equal(await db.liveChannel.count(),total);
+    writeFileSync(join(root,'data','live-tv.json'),before);
+    writeFileSync(join(root,'data','live-tv.json'),'{broken');
+    const broken=createLiveService(db,request,root);await broken.ready;
+    assert.equal((await broken.status()).fileError,true);
+    assert.equal(await db.liveChannel.count(),total);
+  }finally{await db.$disconnect();rmSync(root,{recursive:true,force:true});}
+});

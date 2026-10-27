@@ -4,6 +4,8 @@ release-artifacts/
 *.pem
 !deploy/update-public.pem
 data/
+live-tv.json
+.live-tv.json.*
 .generated/
 .env.setup-*.tmp
 backups/
