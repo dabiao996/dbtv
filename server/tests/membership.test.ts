@@ -16,7 +16,8 @@ const service=createMembershipService(db,()=>now);
 let admin:any,user:any,plan:any;
 const load=(id:number)=>db.user.findUniqueOrThrow({where:{id},include:{sourceAccess:true,membershipPlan:true}});
 before(async()=>{
-  const result=spawnSync(process.execPath,['scripts/database.mjs','push'],{env:{...process.env,DATABASE_PROVIDER:'sqlite',DATABASE_URL:url},encoding:'utf8'});
+  // Ignore any completed local installation choice while preparing this disposable fixture.
+  const result=spawnSync(process.execPath,['scripts/database.mjs','push'],{env:{...process.env,DBTV_DATA_DIR:folder,DATABASE_PROVIDER:'sqlite',DATABASE_URL:url},encoding:'utf8'});
   assert.equal(result.status,0,result.stdout+result.stderr);
   await service.ready();
   admin=await db.user.create({data:{username:'fixture_admin',passwordHash:'not-a-real-password',role:'admin'}});
