@@ -5,10 +5,13 @@ umask 077
 script_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 termux=false
 [[ "${PREFIX:-}" == *com.termux* ]] && termux=true
+host_os="$(uname -s)"
 if "$termux"; then install_home="${DBTV_HOME:-$HOME/.local/share/dabiao-tv}"; install_mode=termux
+elif [[ "$host_os" == Darwin ]]; then install_home="${DBTV_HOME:-$HOME/Library/Application Support/DabiaoTV}"; install_mode=macos
 else install_home="${DBTV_HOME:-/opt/dabiao-tv}"; install_mode=native; fi
 auto_yes=false
 port_supplied=false
+bind_value=''
 manager_args=()
 while (($#)); do
   case "$1" in
@@ -19,8 +22,9 @@ while (($#)); do
       port_value="${2:?端口缺少值}"
       [[ "$port_value" =~ ^[0-9]{1,5}$ ]] && ((10#$port_value >= 1024 && 10#$port_value <= 65535)) || { printf '%s\n' '端口必须是1024–65535的整数' >&2; exit 1; }
       port_supplied=true; manager_args+=(--port "$port_value"); shift 2 ;;
-    --bind|--origin) manager_args+=("$1" "${2:?参数缺少值}"); shift 2 ;;
-    --help) printf '%s\n' '用法：bash scripts/install.sh [--mode native|docker|termux] [--home 专用目录] [--port 8787] [--bind 127.0.0.1|0.0.0.0] [--origin https://域名] [--yes]' '默认回车端口8787；--yes 非交互安装必须显式指定 --port。不会自动开放防火墙、修改反代或 DNS。'; exit 0 ;;
+    --bind) bind_value="${2:?参数缺少值}"; manager_args+=("$1" "$bind_value"); shift 2 ;;
+    --origin) manager_args+=("$1" "${2:?参数缺少值}"); shift 2 ;;
+    --help) printf '%s\n' '用法：bash scripts/install.sh [--mode native|docker|termux|macos] [--home 专用目录] [--port 8787] [--bind 127.0.0.1|0.0.0.0] [--origin https://域名] [--yes]' 'macOS 模式只监听 127.0.0.1；不会接管已有开发站或启用更新代理。'; exit 0 ;;
     *) printf '未知参数：%s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -30,12 +34,18 @@ case "$install_home" in
   *) printf '%s\n' '--home 必须是绝对路径' >&2; exit 1 ;;
 esac
 [[ ! -L "$install_home" ]] || { printf '%s\n' '安装目录不能是符号链接' >&2; exit 1; }
-install_home="$(realpath -m -- "$install_home")"
+if [[ "$host_os" == Darwin ]]; then
+  command -v node >/dev/null || { printf '%s\n' 'macOS 托管安装需要已有 Node.js 22 或更新版本；未自动安装软件。' >&2; exit 1; }
+  install_home="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$install_home")"
+else install_home="$(realpath -m -- "$install_home")"; fi
 case "$install_home" in
   /|/opt|/usr|/var|/var/lib|/home|/root|/tmp|"$HOME"|*:*|*$'\n'*|*$'\r'*) printf '%s\n' '请使用专属于大彪TV的子目录' >&2; exit 1 ;;
 esac
 [[ ! -L "$install_home" ]] || { printf '%s\n' '安装目录不能是符号链接' >&2; exit 1; }
-case "$install_mode" in native|docker|termux) ;; *) printf '%s\n' '安装方式仅支持native/docker/termux' >&2; exit 1;; esac
+case "$install_mode" in native|docker|termux|macos) ;; *) printf '%s\n' '安装方式仅支持native/docker/termux/macos' >&2; exit 1;; esac
+if [[ "$install_mode" == macos && -n "$bind_value" && "$bind_value" != 127.0.0.1 ]]; then
+  printf '%s\n' 'macOS 托管安装只允许监听127.0.0.1，未安装或修改服务。' >&2; exit 1
+fi
 
 install_runtime() {
   # Pinned official Node archive + SHA256; do not overwrite the system's Node.
@@ -77,6 +87,13 @@ if "$termux"; then
   pkg install -y nodejs-lts curl git proot-distro termux-services
   mkdir -p "$install_home"
   host_node="$(command -v node)"
+elif [[ "$install_mode" == macos ]]; then
+  [[ "$host_os" == Darwin && "$(id -u)" != 0 ]] || { printf '%s\n' 'macOS 托管安装只能由当前普通用户执行。' >&2; exit 1; }
+  [[ "$install_home" == "$HOME/"* && "$install_home" != "$HOME/Library/LaunchAgents"* ]] || { printf '%s\n' 'macOS 管理目录必须位于当前用户目录内的专用子目录。' >&2; exit 1; }
+  host_node="$(node -p 'process.execPath')"
+  [[ "$("$host_node" -p 'Number(process.versions.node.split(".")[0])')" -ge 22 ]] || { printf '%s\n' 'macOS 托管安装需要 Node.js 22 或更新版本。' >&2; exit 1; }
+  [[ -f "$(dirname "$host_node")/../lib/node_modules/npm/bin/npm-cli.js" ]] || { printf '%s\n' '未找到与当前 Node.js 配套的 npm，未修改现有网站。' >&2; exit 1; }
+  mkdir -p "$install_home"
 else
   [[ "$install_mode" != termux ]] || { printf '%s\n' 'termux模式只能在Termux运行' >&2; exit 1; }
   [[ "$(uname -s)" == Linux && "$(id -u)" == 0 ]] || { printf '%s\n' 'Linux自动安装需要root权限；请使用sudo。不会在macOS开发机执行安装。' >&2; exit 1; }
@@ -119,4 +136,5 @@ elif [[ "$install_mode" == docker ]]; then
   fi
   docker info >/dev/null || { printf '%s\n' 'Docker尚未运行，请先在面板启动。' >&2; exit 1; }
 fi
-exec "$host_node" "$install_home/app/scripts/tv.mjs" install --home "$install_home" --source "$install_home/app" --node "$install_home/tools/node/bin/node" --mode "$install_mode" "${manager_args[@]}"
+if [[ "$install_mode" == macos ]]; then install_node="$host_node"; else install_node="$install_home/tools/node/bin/node"; fi
+exec "$host_node" "$install_home/app/scripts/tv.mjs" install --home "$install_home" --source "$install_home/app" --node "$install_node" --mode "$install_mode" "${manager_args[@]}"

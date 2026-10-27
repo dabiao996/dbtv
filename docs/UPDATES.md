@@ -10,7 +10,11 @@ Docker使用签名清单中固定的GHCR镜像摘要，不跟随可变的 `lates
 
 本版自动更新适用：通过大彪TV独立脚本管理、已经完成首次安装、健康的 **SQLite** 部署。手动旧部署需要先在备份后对接管理目录，不能重新安装覆盖旧站。MySQL/PostgreSQL自动更新暂时拒绝执行，需建立外部数据库备份和迁移流程；检查版本仍可用。
 
-macOS 上以 Vite `127.0.0.1:5173` 运行的开发站不是受支持的托管安装。它可以检查正式版，但现有独立更新代理要求 Linux root/systemd 或 Termux 服务管理器；不要为了显示更新按钮而伪造代理状态或直接让网页启动高权限更新进程。
+macOS 上以 Vite `127.0.0.1:5173` 运行的开发站不是托管安装，只能检查正式版，不能直接在后台执行更新。本分支新增普通用户的 `macos` 托管模式：网站与更新工作进程使用不同的用户级 LaunchAgent；只有在独立安装目录中安装、完成健康检查，并明确执行 `enable-updates` 后，后台队列才会启用。默认只监听 `127.0.0.1`，不使用 root、Docker socket 或网络更新服务。现有开发站不会被自动接管、迁移或覆盖。
+
+Mac 的最小迁移流程须在用户批准本地安装、备份和停站后进行：先备份现有账号数据库及私有 `live-tv.json`，核对备份；然后从受信任源码执行 `bash scripts/install.sh --mode macos --home "$HOME/Library/Application Support/DabiaoTV" --port 8787` 建立**新**托管站，确认账号、影视源和直播目录在新地址正确迁入且健康；最后在该管理目录用受信任 Node 执行 `scripts/tv.mjs enable-updates --home ...`。安装会添加两个用户级 LaunchAgent，后者只在明确启用更新时添加。本分支只做了隔离模拟，没有执行以上安装或用户数据迁移。不要把空的新站误认为原站已经升级。
+
+Mac 与 Termux 都以同一普通用户运行网站及代理：签名校验、固定发行来源、私有目录、参数限制和停站备份可以防止误操作及远端篡改，但**不能隔离同一用户身份下已被攻破的网站进程**。因此它不提供 Linux root 与专用应用用户之间的权限边界；需要此级别隔离的部署应使用 Linux 托管模式。
 
 使用私有 `data/live-tv.json` 的站点在升级前还须核对该文件的备份：已发布的 `v1.0.1` 更新代理尚未将直播 JSON 纳入快照。本修复分支的管理脚本已加入私有 JSON 备份和失败回退；此前启用的代理使用独立复制的管理代码，源码升级不会自动替换它。旧代理升级前仍需单独备份直播 JSON，并在获得授权后安全更新管理代码。程序切换通常保留持久数据目录，但不能把这当成完整备份或自动回退保障。
 
@@ -51,7 +55,7 @@ node scripts/release-keys.mjs /你的安全目录/dbtv-release-private.pem deplo
 sudo /opt/dabiao-tv/tools/node/bin/node /opt/dabiao-tv/app/scripts/tv.mjs enable-updates --home /opt/dabiao-tv
 ```
 
-该操作确认后创建root持有的独立管理副本和systemd更新队列timer。Termux在宿主用 `node` 执行同一命令（目录改为Termux管理目录），使用单独 `termux-services` 服务，不要求root；其安全边界仍是同一Android应用用户，不能假装具有Linux root隔离。
+该操作确认后在 Linux 创建root持有的独立管理副本和systemd更新队列timer。Termux在宿主用 `node` 执行同一命令（目录改为Termux管理目录），使用单独 `termux-services` 服务；Mac 则创建独立的用户级 LaunchAgent。两者均不要求root，也不能假装具有Linux root隔离。
 
 服务不会自行决定升级，只在管理员确认请求后工作。回到网站后台检查版本、阅读说明、勾选风险确认、验证管理员密码，点击“备份并更新”。重启期间页面可能短暂断开，恢复后自动重新连接并展示结果。
 
@@ -82,4 +86,4 @@ sudo node scripts/tv.mjs rollback --home /opt/dabiao-tv --record 上述记录ID
 
 主机 `update-policy.json`、`manager/`、`updates/` 是管理私有文件；`data/updates/` 仅为受限队列和不含密码/备份路径的状态。备份和运行版本不属于待上传GitHub的源码。
 
-自动测试使用临时目录、临时Ed25519密钥和隔离模拟，覆盖签名篡改、版本比较、权限/同源/密码验证、备份失败、健康失败、兼容回退、不兼容锁定、队列校验及持久记录。`v1.0.1` 已完成 GitHub 签名发布，仍未完成真实 Docker/Linux/Termux 的端到端升级验收；请先在隔离测试设备验证，再用于生产。
+自动测试使用临时目录、临时Ed25519密钥和隔离模拟，覆盖签名篡改、版本比较、权限/同源/密码验证、备份失败、健康失败、兼容回退、不兼容锁定、队列校验及持久记录。Mac 测试还验证不同的 LaunchAgent 配置、本机回环限制，以及在合成 SQLite WAL 与直播 JSON 上的失败回退演练；不安装真实代理。`v1.0.1` 已完成 GitHub 签名发布，仍未完成真实 Docker/Linux/Termux/macOS 托管站的端到端升级验收；请先在隔离测试设备验证，再用于生产。
