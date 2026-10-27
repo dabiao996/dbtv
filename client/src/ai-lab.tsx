@@ -43,7 +43,7 @@ function Lab() {
   }
   return <main className="ai-lab">
     <h1>大彪TV · 本地 AI 画质实验</h1>
-    <p>选择本机已获授权的视频。文件通过浏览器 object URL 播放，不上传服务器。默认原画；可手动选择动画或真人模型，由本机 GPU 处理。按住 A/B 按钮比较同一观看尺寸的原画。</p>
+    <p>选择本机已获授权的视频。文件通过浏览器 object URL 播放，不上传服务器。旧模型已移除；RealESRGAN_x4plus 正在本机验证，目前保持原画。</p>
     <label className="ai-lab-file">选择本地视频<input type="file" accept="video/*" onChange={event => choose(event.target.files?.[0])}/></label>
     <button className="ai-lab-generate" type="button" onClick={makeSyntheticClip}>生成无版权测试片段</button>
     {message && <p role="status">{message}</p>}
@@ -52,7 +52,7 @@ function Lab() {
       <video key={`video-${url}`} ref={videoRef} src={url || undefined} controls playsInline loop preload="metadata"/>
       {url && <AIEnhancer key={`ai-${url}`} videoRef={videoRef}/>}
     </div>
-    <p className="ai-lab-note">测试时记录浏览器、设备、视频尺寸、原画与增强同尺寸观感，以及平均帧耗时和掉帧数。帧耗时包含 CPU 与 GPU 完成等待，不是画质评分。原生全屏、画中画和投屏会回到原画。</p>
+    <p className="ai-lab-note">合成片段仅用于验证播放器和推理功能，不能证明真实影片画质改善。</p>
   </main>;
 }
 

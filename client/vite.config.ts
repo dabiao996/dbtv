@@ -1,2 +1,2 @@
-import {defineConfig} from 'vite'; import react from '@vitejs/plugin-react'; import path from 'node:path';
-export default defineConfig({plugins:[react()],root:'client',resolve:{alias:{'websr-audited-source':path.resolve(__dirname,'../node_modules/@websr/websr/src/main.ts')}},build:{outDir:'dist',emptyOutDir:true},server:{host:'127.0.0.1',port:5173,strictPort:true,proxy:{'/api':'http://127.0.0.1:8787'}}});
+import {defineConfig} from 'vite'; import react from '@vitejs/plugin-react';
+export default defineConfig({plugins:[react()],root:'client',build:{outDir:'dist',emptyOutDir:true},server:{host:'127.0.0.1',port:5173,strictPort:true,proxy:{'/api':'http://127.0.0.1:8787'}}});
