@@ -12,6 +12,7 @@
     "start": "sh scripts/start.sh",
     "setup": "node scripts/setup-database.mjs",
     "test": "node --import tsx --test server/tests/*.test.ts",
+    "test:ai": "node --import tsx --test client/tests/*.test.ts",
     "test:database": "npm run build && node --test server/tests/*integration.mjs",
     "db:generate": "node scripts/database.mjs generate",
     "db:validate": "node scripts/database.mjs validate",
@@ -22,6 +23,7 @@
   },
   "dependencies": {
     "@prisma/client": "6.13.0",
+    "@websr/websr": "0.0.16",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "hls.js": "^1.6.13",
@@ -43,6 +45,7 @@
     "@types/react": "^19.1.10",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^5.0.2",
+    "@webgpu/types": "0.1.34",
     "concurrently": "^9.2.0",
     "prisma": "6.13.0",
     "tsx": "^4.20.5",
