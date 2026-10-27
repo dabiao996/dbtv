@@ -43,7 +43,7 @@ function Lab() {
   }
   return <main className="ai-lab">
     <h1>大彪TV · 本地 AI 画质实验</h1>
-    <p>选择本机已获授权的视频。文件通过浏览器 object URL 播放，不上传服务器。增强默认关闭，仅在点击后加载真人模型并用本机 GPU 处理。按住 A/B 按钮比较同一观看尺寸的原画。</p>
+    <p>选择本机已获授权的视频。文件通过浏览器 object URL 播放，不上传服务器。默认原画；可手动选择动画或真人模型，由本机 GPU 处理。按住 A/B 按钮比较同一观看尺寸的原画。</p>
     <label className="ai-lab-file">选择本地视频<input type="file" accept="video/*" onChange={event => choose(event.target.files?.[0])}/></label>
     <button className="ai-lab-generate" type="button" onClick={makeSyntheticClip}>生成无版权测试片段</button>
     {message && <p role="status">{message}</p>}

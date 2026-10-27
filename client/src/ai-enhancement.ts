@@ -1,16 +1,31 @@
 import type WebSR from 'websr-audited-source';
 
-export type EnhancementMode = 'light' | 'standard';
+export type EnhancementPreset = 'anime' | 'real';
+export type EnhancementLevel = 'light' | 'standard' | 'detail';
 export type EnhancementStatus = {
   active: boolean;
   message: string;
   frameMs?: number;
   droppedFrames?: number;
+  sourceSize?: string;
+  outputSize?: string;
+  displaySize?: string;
+  displayUpscaled?: boolean;
 };
 
-const MODELS: Record<EnhancementMode, {network: 'anime4k/cnn-2x-s' | 'anime4k/cnn-2x-m'; file: string}> = {
-  light: {network: 'anime4k/cnn-2x-s', file: 'cnn-2x-s-rl.json'},
-  standard: {network: 'anime4k/cnn-2x-m', file: 'cnn-2x-m-rl.json'},
+type Network = 'anime4k/cnn-2x-s' | 'anime4k/cnn-2x-m' | 'anime4k/cnn-2x-l';
+type ModelSpec = {network: Network; file: string};
+export const MODELS: Record<EnhancementPreset, Record<EnhancementLevel, ModelSpec>> = {
+  anime: {
+    light: {network: 'anime4k/cnn-2x-s', file: 'cnn-2x-s-an.json'},
+    standard: {network: 'anime4k/cnn-2x-m', file: 'cnn-2x-m-an.json'},
+    detail: {network: 'anime4k/cnn-2x-l', file: 'cnn-2x-l-an.json'},
+  },
+  real: {
+    light: {network: 'anime4k/cnn-2x-s', file: 'cnn-2x-s-rl.json'},
+    standard: {network: 'anime4k/cnn-2x-m', file: 'cnn-2x-m-rl.json'},
+    detail: {network: 'anime4k/cnn-2x-l', file: 'cnn-2x-l-rl.json'},
+  },
 };
 
 // The 2D read is deliberately local: it catches tainted and protected video before WebGPU import.
@@ -39,22 +54,24 @@ export class AIEnhancementSession {
   private needsVisibleUpdate = false;
   private originalWidth = 0;
   private originalHeight = 0;
+  private initialDroppedFrames = 0;
   private onStatus: (status: EnhancementStatus) => void;
 
   constructor(private video: HTMLVideoElement, private canvas: HTMLCanvasElement, onStatus: (status: EnhancementStatus) => void) {
     this.onStatus = onStatus;
   }
 
-  async start(mode: EnhancementMode, signal: AbortSignal): Promise<void> {
+  async start(preset: EnhancementPreset, level: EnhancementLevel, signal: AbortSignal): Promise<void> {
     if (!window.isSecureContext) throw new Error('AI 增强需要 HTTPS 或本机 localhost 安全上下文');
     if (!('gpu' in navigator)) throw new Error('此浏览器或设备未提供 WebGPU，继续播放原画');
     if (!this.video.requestVideoFrameCallback || !this.video.cancelVideoFrameCallback) throw new Error('此浏览器没有视频帧回调，继续播放原画');
     if (!this.video.videoWidth || !this.video.videoHeight) throw new Error('视频画面尚未准备好');
     checkReadableFrame(this.video);
-    const model = MODELS[mode];
+    const model = MODELS[preset][level];
     const response = await fetch(`${import.meta.env.BASE_URL}models/websr/${model.file}`, {signal, cache: 'force-cache'});
-    if (!response.ok) throw new Error(`真人模型加载失败（HTTP ${response.status}），继续播放原画`);
-    const weights = await response.json();
+    if (!response.ok) throw new Error(`模型加载失败（HTTP ${response.status}），继续播放原画`);
+    const weights = await response.json().catch(() => {throw new Error('模型文件无效，继续播放原画');});
+    if (weights?.name !== model.network || !weights.layers || typeof weights.layers !== 'object') throw new Error('模型与网络不匹配，继续播放原画');
     if (signal.aborted) return;
     // Import only after the user explicitly enables enhancement.
     const {default: WebSRClass} = await import('websr-audited-source');
@@ -64,6 +81,7 @@ export class AIEnhancementSession {
     if (signal.aborted) {gpu.destroy(); this.device = undefined; return;}
     this.originalWidth = this.video.videoWidth;
     this.originalHeight = this.video.videoHeight;
+    this.initialDroppedFrames = this.video.getVideoPlaybackQuality?.().droppedVideoFrames || 0;
     this.websr = new WebSRClass({canvas: this.canvas, weights, network_name: model.network, gpu});
     this.active = true;
     void gpu.lost.then(() => this.fail('GPU 设备已断开，已恢复原画'));
@@ -109,6 +127,14 @@ export class AIEnhancementSession {
       await this.websr.render(this.video);
       await this.device.queue.onSubmittedWorkDone();
       if (!this.active) return;
+      if (this.canvas.width !== this.originalWidth * 2 || this.canvas.height !== this.originalHeight * 2) {
+        throw new Error('模型输出尺寸异常');
+      }
+      const videoRect = this.video.getBoundingClientRect();
+      const canvasRect = this.canvas.getBoundingClientRect();
+      if (videoRect.width && (Math.abs(videoRect.width - canvasRect.width) > 2 || Math.abs(videoRect.height - canvasRect.height) > 2)) {
+        throw new Error('增强画布与原画未对齐');
+      }
       const ms = performance.now() - start;
       // The first render includes shader compilation, so report steady-frame cost separately.
       if (this.completedFrames > 0) {
@@ -116,11 +142,11 @@ export class AIEnhancementSession {
         if (this.frameTimes.length > 30) this.frameTimes.shift();
       }
       const average = this.frameTimes.length ? this.frameTimes.reduce((sum, value) => sum + value, 0) / this.frameTimes.length : undefined;
-      const dropped = this.video.getVideoPlaybackQuality?.().droppedVideoFrames;
+      const dropped = Math.max(0, (this.video.getVideoPlaybackQuality?.().droppedVideoFrames || 0) - this.initialDroppedFrames);
       this.completedFrames++;
       if (this.completedFrames === 1 || this.completedFrames % 15 === 0 || this.needsVisibleUpdate) {
         this.needsVisibleUpdate = false;
-        this.onStatus({active: true, message: average === undefined ? '模型已加载；首帧正在预热' : average > 50 ? '设备处理较慢；可切换轻量档或关闭增强' : 'AI 增强运行中', frameMs: average === undefined ? undefined : Math.round(average), droppedFrames: dropped});
+        this.onStatus({active: true, message: average === undefined ? '模型已加载；首帧正在预热' : average > 50 ? '设备处理较慢；可切换轻量档或原画' : '模型逐帧运行中', frameMs: average === undefined ? undefined : Math.round(average), droppedFrames: dropped, sourceSize: `${this.originalWidth}×${this.originalHeight}`, outputSize: `${this.canvas.width}×${this.canvas.height}`, displaySize: `${Math.round(canvasRect.width)}×${Math.round(canvasRect.height)}`, displayUpscaled: canvasRect.width > this.canvas.width * 1.05 || canvasRect.height > this.canvas.height * 1.05});
       }
     } catch (error) {
       this.fail(error instanceof Error ? `GPU 处理失败：${error.message}` : 'GPU 处理失败，已恢复原画');

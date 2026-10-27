@@ -18,7 +18,7 @@
 - 首页、资源源、搜索、详情、播放、收藏、历史
 - 后台配置导入和手动视频 API
 - PWA、电视端友好深色界面
-- 播放页可手动开启浏览器本地 AI 画质增强实验；兼容条件、模型来源和本机测试见 [实验说明](docs/AI-ENHANCEMENT-EXPERIMENT.md)
+- 播放页可手动选择原画、动画 Anime4K CNN 或真人 WebSR 实验；默认原画。兼容条件、模型来源和本机测试见 [实验说明](docs/AI-ENHANCEMENT-EXPERIMENT.md)
 - 账号注册开关、积分赠送/调整、积分兑换会员、等级权限和审计流水（未接在线支付）
 
 会员与积分操作说明见 [会员系统说明](docs/MEMBERSHIP.md)。用户入口 `/membership`，后台入口 `/admin/membership`。升级前备份数据库；积分与会员数据保存在部署时选择的数据库里，不属于公开源码。
