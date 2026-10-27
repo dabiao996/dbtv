@@ -205,7 +205,7 @@ export function read(home) {
   if(!fs.existsSync(file)) throw Error('此管理目录尚未安装大彪TV；不会自动接管其他目录的网站');
   if(fs.lstatSync(file).isSymbolicLink()||(fs.statSync(file).mode&0o077)) throw Error('管理配置权限不安全，请设为600');
   const state=JSON.parse(fs.readFileSync(file,'utf8'));
-  if(state.version!==1||state.id!=='dbtv'||!['native','docker','termux','macos'].includes(state.mode)||!path.isAbsolute(state.source)||!path.isAbsolute(state.node)||!['127.0.0.1','0.0.0.0'].includes(state.bind)||state.mode==='macos'&&state.bind!=='127.0.0.1') throw Error('管理配置无效');
+  if(state.version!==1||state.id!=='dbtv'||!['native','docker','termux'].includes(state.mode)||!path.isAbsolute(state.source)||!path.isAbsolute(state.node)||!['127.0.0.1','0.0.0.0'].includes(state.bind)) throw Error('管理配置无效');
   portNumber(state.port);origin(state.origin);
   return state;
 }

@@ -10,7 +10,6 @@ import {APP,DEFAULT_PORT,portNumber,origin,available,choosePort,privateDirectory
 import releases from './releases.cjs';
 import * as updates from './tv/updates.mjs';
 import {createDriver} from './tv/update-driver.mjs';
-import {macAgentFile,macRunning,macService,registerMacApp,enableMacAgent} from './tv/macos.mjs';
 
 const entry=fileURLToPath(import.meta.url);
 const say=message=>process.stderr.write(`${message}\n`);
@@ -44,9 +43,7 @@ function application(home,state,command,args=[],opts={}) {
 }
 function npmPath(state) {return path.resolve(path.dirname(state.node),'../lib/node_modules/npm/bin/npm-cli.js');}
 function requireRoot(state) {if(state.mode==='native'&&(process.platform!=='linux'||process.getuid?.()!==0))throw Error('Linux 原生管理需要 root 权限和 systemd；请使用 sudo，或选择 Docker');}
-function requireMacUser(state) {if(state.mode==='macos'&&(process.platform!=='darwin'||process.getuid?.()===0))throw Error('macOS 托管管理必须由本机普通用户执行');}
 function service(home,state,action,{allowFailure=false}={}) {
-  if(state.mode==='macos')return macService(home,state,action,execute,{allowFailure});
   if(state.mode==='docker') {
     if(action==='stop')return docker(home,['stop'],{allowFailure});
     return docker(home,['up','-d','--no-build','--force-recreate'],{allowFailure});
@@ -59,7 +56,6 @@ function service(home,state,action,{allowFailure=false}={}) {
   requireRoot(state);return execute('systemctl',[action,'dabiao-tv-managed.service'],{allowFailure});
 }
 function processRunning(home,state) {
-  if(state.mode==='macos')return macRunning(home,'app',execute);
   if(state.mode==='docker')return docker(home,['ps','--status','running','--quiet'],{capture:true,allowFailure:true}).text.trim().length>0;
   if(state.mode==='termux')return execute('sv',['status',path.join(process.env.PREFIX,'var/service/dabiao-tv')],{capture:true,allowFailure:true}).text.startsWith('run:');
   return execute('systemctl',['is-active','--quiet','dabiao-tv-managed.service'],{capture:true,allowFailure:true}).ok;
@@ -106,7 +102,6 @@ function protectNative(home,state) {
 }
 function registerService(home,state) {
   if(state.mode==='docker')return;
-  if(state.mode==='macos'){registerMacApp(home,state);return;}
   if(state.mode==='termux') {
     const directory=path.join(process.env.PREFIX,'var/service/dabiao-tv');
     if(fs.existsSync(directory))throw Error('Termux 已有同名服务，拒绝覆盖；请先核对服务来源');
@@ -172,7 +167,7 @@ async function serve(home,state) {
   }
   const log=path.join(home,'service.log');
   let fd;
-  if(state.mode==='termux'||state.mode==='macos') {
+  if(state.mode==='termux') {
     if(fs.existsSync(log)&&fs.statSync(log).size>2*1024*1024)fs.renameSync(log,`${log}.1`);
     fd=fs.openSync(log,'a',0o600);
   }
@@ -209,7 +204,7 @@ async function main() {
   let locked=false;
   try {
     if(command==='help') {
-      console.log('大彪TV 独立管理适配器\n命令：install / start / stop / restart / status / port / domain / backup / logs / doctor\n更新：check-update / enable-updates / update --version X.Y.Z / rollback --record ID / update-history / update-worker\n参数：--home DIR --port NUMBER --bind 127.0.0.1|0.0.0.0 --origin URL --mode native|docker|termux|macos --yes --json --dry-run\n默认端口8787；安装使用 bash scripts/install.sh。domain 只设置应用来源，不修改 DNS/Nginx/证书。');return;
+      console.log('大彪TV 独立管理适配器\n命令：install / start / stop / restart / status / port / domain / backup / logs / doctor\n更新：check-update / enable-updates / update --version X.Y.Z / rollback --record ID / update-history / update-worker\n参数：--home DIR --port NUMBER --bind 127.0.0.1|0.0.0.0 --origin URL --mode native|docker|termux --yes --json --dry-run\n默认端口8787；安装使用 bash scripts/install.sh。domain 只设置应用来源，不修改 DNS/Nginx/证书。');return;
     }
     if(command==='describe'){console.log(JSON.stringify(APP));return;}
     if(command==='doctor') {
@@ -224,7 +219,7 @@ async function main() {
         if(action)execute(process.execPath,[entry,action,'--home',home],{allowFailure:true});
       }
     }
-    if(command==='serve'){const state=read(process.getuid?.()===0||termux||process.platform==='darwin'?home:path.join(home,'data'));requireMacUser(state);await serve(home,state);return;}
+    if(command==='serve'){await serve(home,read(process.getuid?.()===0||termux?home:path.join(home,'data')));return;}
     if(command==='check-update'){
       const state=read(home),key=releases.publicKey(state.source),remote=await releases.release({key});
       console.log(JSON.stringify({current:state.release||releases.current(state.source),latest:remote.manifest.version,url:remote.url,notes:remote.notes}));return;
@@ -240,20 +235,17 @@ async function main() {
     if(opts['dry-run']) {
       if(!['install','port'].includes(command))throw Error('此命令不支持dry-run；请先查看check-update和update-history');
       if(opts.bind&&!['127.0.0.1','0.0.0.0'].includes(opts.bind))throw Error('监听地址只能是127.0.0.1或0.0.0.0');
-      const mode=opts.mode||(termux?'termux':process.platform==='darwin'?'macos':'native');
-      if(mode==='macos'&&(process.platform!=='darwin'||(opts.bind||'127.0.0.1')!=='127.0.0.1'))throw Error('macOS 托管安装仅限127.0.0.1');
       const port=await choosePort({value:opts.port,host:opts.bind||'127.0.0.1',ask,report:say});
-      console.log(JSON.stringify({...APP,action:command,dryRun:true,home,port,origin:origin(opts.origin||''),mode,bind:opts.bind||'127.0.0.1'}));return;
+      console.log(JSON.stringify({...APP,action:command,dryRun:true,home,port,origin:origin(opts.origin||''),mode:opts.mode||'native',bind:opts.bind||'127.0.0.1'}));return;
     }
     privateDirectory(home);
     try{fs.writeFileSync(path.join(home,'operation.lock'),String(process.pid),{flag:'wx',mode:0o600});locked=true;}catch{throw Error('另一个管理操作正在执行；异常中断后请先核实进程，再处理 operation.lock，不会自动抢锁');}
     if(command==='install') {
       if(fs.existsSync(path.join(home,'deployment.json'))) {say('检测到已有部署，未重装、未覆盖数据。');showStatus(await status(home,read(home)),opts.json);return;}
-      const mode=opts.mode||(termux?'termux':process.platform==='darwin'?'macos':'native');
-      if(!['native','docker','termux','macos'].includes(mode))throw Error('不支持的安装方式');
+      const mode=opts.mode||(termux?'termux':'native');
+      if(!['native','docker','termux'].includes(mode))throw Error('不支持的安装方式');
       const bind=opts.bind||(mode==='termux'?'0.0.0.0':'127.0.0.1');
       if(!['127.0.0.1','0.0.0.0'].includes(bind))throw Error('监听地址只能是127.0.0.1或0.0.0.0');
-      if(mode==='macos'&&(process.platform!=='darwin'||process.getuid?.()===0||bind!=='127.0.0.1'))throw Error('macOS 托管安装仅限普通用户和127.0.0.1');
       const port=await choosePort({value:opts.port,host:bind,ask,report:say});
       const domain=origin(opts.origin!==undefined?opts.origin:opts.yes?'':await ask('访问域名（可留空，以后设置）：'));
       const state={version:1,id:'dbtv',mode,bind,port,origin:domain,source:path.resolve(opts.source||path.join(home,'app')),node:path.resolve(opts.node||process.execPath),createdAt:new Date().toISOString()};
@@ -262,7 +254,7 @@ async function main() {
       if(mode==='termux'&&!termux)throw Error('termux 模式必须在 Termux 宿主执行');
       if(mode==='native'&&!fs.existsSync('/run/systemd/system'))throw Error('未检测到运行中的 systemd；面板/容器请使用 Docker 或手动部署');
       if(!fs.existsSync(path.join(state.source,'package-lock.json')))throw Error('缺少源码或锁文件，请先运行 install.sh');
-      if(mode==='native'&&fs.existsSync('/etc/systemd/system/dabiao-tv-managed.service')||mode==='termux'&&fs.existsSync(path.join(process.env.PREFIX,'var/service/dabiao-tv'))||mode==='macos'&&fs.existsSync(macAgentFile(home,'app')))throw Error('已有同名管理服务，拒绝接管或覆盖；请先确认已有部署位置');
+      if(mode==='native'&&fs.existsSync('/etc/systemd/system/dabiao-tv-managed.service')||mode==='termux'&&fs.existsSync(path.join(process.env.PREFIX,'var/service/dabiao-tv')))throw Error('已有同名管理服务，拒绝接管或覆盖；请先确认已有部署位置');
       if(fs.existsSync(path.join(state.source,'.env'))||fs.existsSync(path.join(state.source,'prisma/dev.db')))throw Error('发现已有私有配置或数据库，拒绝当成新站覆盖；请先备份并按文档迁移');
       await confirm(`安装到 ${home}，端口 ${port}，方式 ${mode}，将创建专属服务；不更改防火墙或现有反代`);
       privateDirectory(path.join(home,'data'));managerFiles(home,state);
@@ -274,7 +266,7 @@ async function main() {
       }
       if(mode==='docker')docker(home,['build']);
       else {
-        application(home,state,state.node,[npmPath(state),'ci','--include=dev','--ignore-scripts','--no-audit','--no-fund']);
+        application(home,state,state.node,[npmPath(state),'ci','--ignore-scripts','--no-audit','--no-fund']);
         application(home,state,state.node,[npmPath(state),'run','build']);
         application(home,state,state.node,[npmPath(state),'cache','clean','--force']);
       }
@@ -289,28 +281,24 @@ async function main() {
       service(home,state,'start');await waitHealthy(home,state);
       showStatus(await status(home,state),opts.json);return;
     }
-    const state=read(home);requireRoot(state);requireMacUser(state);
+    const state=read(home);requireRoot(state);
     if(['enable-updates','update-worker','update','rollback'].includes(command)){
       if(command==='enable-updates'){
         await confirm('启用独立更新代理；允许后台经管理员确认后安装签名正式版，SQLite先停站备份，不授予网页root或Docker socket');
         const key=releases.publicKey(state.source);if(!key)throw Error('请先配置发行公钥，不能启用不可信更新');
-        if(state.mode==='macos'){
-          const current=await health(state);
-          if(process.platform!=='darwin'||process.getuid?.()===0||state.bind!=='127.0.0.1'||!processRunning(home,state)||!current.http||current.database!=='connected'||current.installed!==true)throw Error('macOS 更新代理仅能为健康的本机托管站启用');
-        }else if(state.mode!=='termux'&&(process.platform!=='linux'||process.getuid?.()!==0||!fs.existsSync('/run/systemd/system')))throw Error('更新代理需要Linux root/systemd；Termux使用独立runit服务');
-        const agentNode=state.mode==='termux'?process.execPath:state.mode==='macos'?state.node:path.join(home,'tools/node/bin/node');
-        if(state.mode==='native'&&(!fs.existsSync(agentNode)||fs.statSync(agentNode).uid!==0||(fs.statSync(agentNode).mode&0o022)))throw Error('代理必须使用安装目录中root持有的私有Node，拒绝使用用户可修改的运行环境');
-        if(state.mode==='termux'?fs.existsSync(path.join(process.env.PREFIX,'var/service/dabiao-tv-updates')):state.mode==='macos'?fs.existsSync(macAgentFile(home,'updates')):fs.existsSync('/etc/systemd/system/dbtv-updater.service')||fs.existsSync('/etc/systemd/system/dbtv-updater.timer'))throw Error('已有同名更新代理，拒绝覆盖，请先核对来源');
+        if(state.mode!=='termux'&&(process.platform!=='linux'||process.getuid?.()!==0||!fs.existsSync('/run/systemd/system')))throw Error('更新代理需要Linux root/systemd；Termux使用独立runit服务');
+        const agentNode=state.mode==='termux'?process.execPath:path.join(home,'tools/node/bin/node');
+        if(state.mode!=='termux'&&(!fs.existsSync(agentNode)||fs.statSync(agentNode).uid!==0||(fs.statSync(agentNode).mode&0o022)))throw Error('代理必须使用安装目录中root持有的私有Node，拒绝使用用户可修改的运行环境');
+        if(state.mode==='termux'?fs.existsSync(path.join(process.env.PREFIX,'var/service/dabiao-tv-updates')):fs.existsSync('/etc/systemd/system/dbtv-updater.service')||fs.existsSync('/etc/systemd/system/dbtv-updater.timer'))throw Error('已有同名更新代理，拒绝覆盖，请先核对来源');
         const controller=path.join(home,'manager');privateDirectory(controller);
         for(const file of ['tv.mjs','releases.cjs'])fs.copyFileSync(path.join(path.dirname(entry),file),path.join(controller,file));
         privateDirectory(path.join(controller,'tv'));
-        for(const file of ['core.mjs','updates.mjs','update-driver.mjs','macos.mjs'])fs.copyFileSync(path.join(path.dirname(entry),'tv',file),path.join(controller,'tv',file));
+        for(const file of ['core.mjs','updates.mjs','update-driver.mjs'])fs.copyFileSync(path.join(path.dirname(entry),'tv',file),path.join(controller,'tv',file));
         const agentEntry=path.join(controller,'tv.mjs');
         updates.enable(home,key);
         const directory=updates.publicStatus(home,{enabled:false,currentContract:(state.release||releases.current(state.source)).dataContract});
         const driver=createDriver(home,{execute,docker,application,npmPath,processRunning,service,backup,persist,waitHealthy,key,mode:state.mode});await driver.permissions(directory);
-        if(state.mode==='macos')enableMacAgent(home,state,agentEntry,execute);
-        else if(state.mode==='termux'){
+        if(state.mode==='termux'){
           const dir=path.join(process.env.PREFIX,'var/service/dabiao-tv-updates');if(fs.existsSync(dir))throw Error('已有同名更新代理，拒绝覆盖');privateDirectory(dir);
           atomic(path.join(dir,'run'),`#!${process.env.PREFIX}/bin/sh\nwhile true; do\n${shellQuote(agentNode)} ${shellQuote(agentEntry)} update-worker --home ${shellQuote(home)}\nsleep 10\ndone\n`,0o700);
           execute('sv',['up',dir]);
