@@ -1,9 +1,10 @@
 import React,{createContext,useCallback,useContext,useEffect,useRef,useState} from 'react';
 import {createPortal} from 'react-dom';
-import {Link,useLocation} from 'react-router-dom';
+import {Link,useLocation,useNavigate} from 'react-router-dom';
 import Icon from './Icon';
 import {matchingEpisode} from '../playback';
 import {RatingBadge} from '../ratings';
+import {shouldOpenPreviewDetails} from './preview-navigation';
 
 export type CinemaVideo={id:string;sourceKey:string;sourceName?:string;title:string;cover?:string;year?:number;category?:string;area?:string;language?:string;desc?:string;episodes?:any[];variants?:{sourceKey:string;sourceName:string}[]};
 const base=import.meta.env.VITE_API_URL||'';
@@ -20,7 +21,7 @@ export function PreviewProvider({children}:{children:React.ReactNode}){
   const clearTimers=useCallback(()=>{clearTimeout(openTimer.current);clearTimeout(closeTimer.current)},[]);
   const dismiss=useCallback(()=>{clearTimers();setState(undefined)},[clearTimers]);
   const keep=useCallback(()=>clearTimeout(closeTimer.current),[]);
-  const leave=useCallback(()=>{clearTimeout(openTimer.current);clearTimeout(closeTimer.current);closeTimer.current=setTimeout(()=>setState(undefined),180)},[]);
+  const leave=useCallback(()=>{clearTimeout(openTimer.current);clearTimeout(closeTimer.current);closeTimer.current=setTimeout(()=>setState(undefined),240)},[]);
   const open=useCallback((video:CinemaVideo,anchor:HTMLElement,immediate=false,keyboard=false)=>{
     clearTimers();const show=()=>{if(anchor.isConnected)setState({video,anchor,rect:anchor.getBoundingClientRect(),keyboard})};
     if(immediate)show();else openTimer.current=setTimeout(show,320);
@@ -28,12 +29,14 @@ export function PreviewProvider({children}:{children:React.ReactNode}){
   useEffect(()=>{dismiss()},[location.key,dismiss]);
   useEffect(()=>()=>clearTimers(),[clearTimers]);
   useEffect(()=>{if(!state)return;const resize=()=>dismiss(),scroll=(event:Event)=>{if(event.target instanceof Element&&event.target.closest('.cinema-preview'))return;dismiss()};const key=(event:KeyboardEvent)=>{if(event.key==='Escape'){event.preventDefault();if(state.keyboard)state.anchor.focus();dismiss()}};
-    addEventListener('resize',resize);addEventListener('scroll',scroll,true);addEventListener('keydown',key);
-    return()=>{removeEventListener('resize',resize);removeEventListener('scroll',scroll,true);removeEventListener('keydown',key)};
+    const outside=(event:PointerEvent)=>{if(event.target instanceof Element&&(event.target.closest('.cinema-preview')||state.anchor.contains(event.target)))return;dismiss()};
+    addEventListener('resize',resize);addEventListener('scroll',scroll,true);addEventListener('keydown',key);document.addEventListener('pointerdown',outside,true);
+    return()=>{removeEventListener('resize',resize);removeEventListener('scroll',scroll,true);removeEventListener('keydown',key);document.removeEventListener('pointerdown',outside,true)};
   },[state,dismiss]);
   return <PreviewContext.Provider value={{open,leave,keep}}>{children}{state&&createPortal(<PreviewPanel key={state.video.sourceKey+state.video.id} state={state} keep={keep} leave={leave} dismiss={dismiss}/>,document.body)}</PreviewContext.Provider>;
 }
 function PreviewPanel({state,keep,leave,dismiss}:{state:PreviewState;keep:()=>void;leave:()=>void;dismiss:()=>void}){
+  const navigate=useNavigate();
   const [video,setVideo]=useState(state.video),[loading,setLoading]=useState(true),[error,setError]=useState('');
   const [favorite,setFavorite]=useState<any>(),[saving,setSaving]=useState(false);
   const closeRef=useRef<HTMLButtonElement>(null);
@@ -52,12 +55,17 @@ function PreviewPanel({state,keep,leave,dismiss}:{state:PreviewState;keep:()=>vo
   }catch(e:any){setError(e.message)}finally{setSaving(false)}}
   const episode=matchingEpisode(video.episodes||[]),detail=`/detail/${encodeURIComponent(video.sourceKey)}/${encodeURIComponent(video.id)}`;
   const play=episode?`/player/${encodeURIComponent(video.sourceKey)}/${encodeURIComponent(video.id)}/${encodeURIComponent(episode.id)}`:detail;
-  return <section className="cinema-preview" role="dialog" aria-label={`${video.title} · 影片预览`} style={{left,top,width,maxHeight:height}} onPointerEnter={keep} onPointerLeave={leave} onFocusCapture={keep} onBlurCapture={e=>{if(!e.currentTarget.contains(e.relatedTarget as Node))leave()}}>
-    <div className="cinema-preview-image">{video.cover?<img src={video.cover} alt={video.title}/>:<div className="cinema-cover-placeholder">{video.title.slice(0,1)}</div>}<div className="cinema-preview-shade"/><span className="cinema-preview-tag">影片预览</span><button ref={closeRef} className="cinema-circle preview-close" aria-label="关闭影片预览" onClick={()=>{if(state.keyboard)state.anchor.focus();dismiss()}}><Icon name="close" size={17}/></button></div>
-    <div className="cinema-preview-body"><div className="cinema-overline">{video.sourceName||video.sourceKey}</div><h3>{video.title}</h3><div className="cinema-metadata">{[video.year,video.category,video.area].filter(Boolean).map((x,i)=><span key={i}>{x}</span>)}</div>
+  const openDetails=(event:React.MouseEvent<HTMLElement>)=>{
+    const target=event.target instanceof Element?event.target:null;
+    const fromControl=!!target?.closest('a,button,input,textarea,select,summary,[role="button"],[role="link"],[contenteditable]');
+    if(shouldOpenPreviewDetails({button:event.button,defaultPrevented:event.defaultPrevented,ctrlKey:event.ctrlKey,metaKey:event.metaKey,shiftKey:event.shiftKey,altKey:event.altKey,fromControl,hasSelection:!!window.getSelection()?.toString().trim()}))navigate(detail);
+  };
+  return <section className="cinema-preview" role="dialog" aria-label={`${video.title} · 影片预览`} style={{left,top,width,maxHeight:height}} onClick={openDetails} onPointerEnter={keep} onPointerLeave={event=>{if(event.pointerType==='mouse'&&(!state.keyboard||!event.currentTarget.contains(document.activeElement)))leave()}} onFocusCapture={keep} onBlurCapture={e=>{if(!e.currentTarget.contains(e.relatedTarget as Node)&&!e.currentTarget.matches(':hover'))leave()}}>
+    <div className="cinema-preview-image"><Link className="cinema-preview-poster-link" to={detail} aria-label={`查看《${video.title}》的详情`} tabIndex={-1}>{video.cover?<img src={video.cover} alt={video.title}/>:<div className="cinema-cover-placeholder">{video.title.slice(0,1)}</div>}<div className="cinema-preview-shade"/><span className="cinema-preview-tag">影片预览</span><span className="cinema-preview-hint" aria-hidden="true">查看详情 <Icon name="right" size={13}/></span></Link><button ref={closeRef} className="cinema-circle preview-close" aria-label="关闭影片预览" onClick={()=>{if(state.keyboard)state.anchor.focus();dismiss()}}><Icon name="close" size={17}/></button></div>
+    <div className="cinema-preview-body"><div className="cinema-overline">{video.sourceName||video.sourceKey}</div><h3><Link className="cinema-preview-title-link" to={detail}>{video.title}</Link></h3><div className="cinema-metadata">{[video.year,video.category,video.area].filter(Boolean).map((x,i)=><span key={i}>{x}</span>)}</div>
       <RatingBadge video={video}/>
       <p className="cinema-preview-description">{plainText(video.desc||'')||(loading?'正在读取影片资料…':'还没有这部影片的简介，进入详情查看播放源与剧集。')}</p>
-      <div className="cinema-preview-actions"><Link className="cinema-play-small" to={play}><Icon name="play" size={20}/>{episode?'立即播放':'查看影片'}</Link><button className="cinema-circle" disabled={saving||favorite===undefined} aria-label={favorite?'取消收藏':'加入收藏'} aria-pressed={!!favorite} onClick={()=>void toggleFavorite()}><Icon name={favorite?'check':'plus'}/></button><Link className="cinema-circle" to={detail} aria-label="查看影片详情"><Icon name="info"/></Link></div>
+      <div className="cinema-preview-actions"><Link className="cinema-play-small" to={play}><Icon name="play" size={20}/>{episode?'立即播放':'查看影片'}</Link><button className="cinema-circle" disabled={favorite===undefined} aria-disabled={saving||favorite===undefined} aria-busy={saving} aria-label={favorite?'取消收藏':'加入收藏'} aria-pressed={!!favorite} onClick={()=>void toggleFavorite()}><Icon name={favorite?'check':'plus'}/></button><Link className="cinema-circle" to={detail} aria-label="查看影片详情"><Icon name="info"/></Link></div>
       {video.variants&&<small>{new Set(video.variants.map(x=>x.sourceKey)).size} 个播放源可供选择</small>}{error&&<p className="cinema-action-error" role="alert">{error}</p>}
     </div>
   </section>;

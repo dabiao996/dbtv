@@ -12,6 +12,7 @@ import {readPagination,createMergedPagination,remoteHasMore} from './pagination.
 import {registerResourceCenter} from './resource-center.js';
 import {createInstallation} from './installation.js';
 import {registerUpdates} from './updates.js';
+import {registerLive} from './live.js';
 const releaseInfo=require('../../scripts/releases.cjs').current();
 const databaseTools=require('../../scripts/database-config.cjs');
 const databaseConfig=databaseTools.applyDatabaseEnvironment();
@@ -57,6 +58,7 @@ app.use('/api',async(req:any,res:any,next:any)=>{
 });
 registerMembership(app,db,{requireUser,requireAdmin,hashPassword},membership);
 registerUpdates(app,{requireAdmin,checkPassword});
+registerLive(app,db,{requireUser,requireAdmin});
 const page=(p:any)=>Math.max(1,Number(p)||1); const size=(p:any)=>Math.min(100,Math.max(1,Number(p)||24));
 const syncCache=new Map<string,{at:number,total:number}>(); const sourceRefresh=new Map<string,number>(); const sourceTotals=new Map<string,number>(); const REFRESH_MS=15*60*1000;
 const DEFAULT_LOCAL_CATEGORIES=['电影','电视剧','综艺','动漫','纪录片','短剧','动作','喜剧','爱情','科幻','恐怖','剧情','悬疑','犯罪','战争','国产剧','港剧','台剧','欧美剧','日韩剧','动画','少儿','音乐','体育','资讯','福利'];

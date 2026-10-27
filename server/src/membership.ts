@@ -13,6 +13,7 @@ const digest=(value:any)=>createHash('sha256').update(JSON.stringify(value)).dig
 const strings=(value:string)=>{try{const rows=JSON.parse(value);return Array.isArray(rows)?rows.filter(x=>typeof x==='string'):[]}catch{return []}};
 
 export function permissionForApi(path:string,method='GET'):string|null{
+  if(/^\/api\/live(\/|$)/.test(path))return 'playback';
   if(/^\/api\/sources\/[^/]+\/search\/?$/.test(path))return 'search';
   if(/^\/api\/sources\/[^/]+\/videos\/[^/]+\/?$/.test(path)||/^\/api\/(playback-options|play|playback-errors)(\/|$)/.test(path))return 'playback';
   if(/^\/api\/(sources|library)(\/|$)/.test(path))return 'sources';

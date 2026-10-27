@@ -14,7 +14,7 @@ export default function CinemaCard({video:summary,progress}:{video:CinemaVideo;p
   },[summary.id,summary.sourceKey,summary.cover]);
   const src=video.cover||'',detail=`/detail/${encodeURIComponent(video.sourceKey)}/${encodeURIComponent(video.id)}`;
   const names=video.variants?[...new Set(video.variants.map(x=>x.sourceName))].join(' · '):video.category||video.area||video.sourceName||'影视';
-  return <article ref={card} className="movie-card cinema-card" onPointerEnter={e=>{if(e.pointerType==='mouse'&&matchMedia('(hover:hover)').matches)preview.open(video,e.currentTarget)}} onPointerLeave={preview.leave}>
+  return <article ref={card} className="movie-card cinema-card" onPointerEnter={e=>{if(e.pointerType==='mouse'&&matchMedia('(hover:hover)').matches)preview.open(video,e.currentTarget)}} onPointerLeave={e=>{if(e.pointerType==='mouse')preview.leave()}}>
     <Link className="movie-poster" to={detail} aria-label={`查看《${video.title}》`}>
       {src&&failed!==src?<img src={src} alt={video.title} loading="lazy" decoding="async" onError={()=>setFailed(src)}/>:<span className="cinema-cover-placeholder">{video.title.slice(0,1)}</span>}
       <div className="cinema-card-shade"/>{video.variants&&<em className="source-count">{new Set(video.variants.map(x=>x.sourceKey)).size} 个源</em>}{video.year&&<small>{video.year}</small>}

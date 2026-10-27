@@ -153,6 +153,24 @@ model Setting {
   value String
 }
 
+// Live TV is separate from VOD sources and never changes existing source grants.
+model LiveChannel {
+  id            String   @id
+  name          String
+  country       String   @default("ZZ")
+  tags          String
+  cover         String?
+  rawConfig     String
+  enabled       Boolean  @default(true)
+  available     Boolean  @default(true)
+  lastCheckedAt DateTime?
+  lastError     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([country, enabled, available])
+}
+
 model CategoryBinding {
   id             Int      @id @default(autoincrement())
   sourceKey      String

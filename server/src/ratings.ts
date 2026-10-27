@@ -6,7 +6,7 @@ export type Rating={provider:'TMDB';score:number;votes:number;url:string;matched
 type Result={status:'matched'|'unmatched'|'unavailable'|'disabled'|'unconfigured';rating?:Rating};
 const prefix='rating:',cachePrefix=prefix+'cache:';
 const DAY=86400000;
-export const publicSettingsRows=(rows:{key:string;value:string}[])=>rows.filter(row=>!row.key.startsWith(prefix)&&!row.key.startsWith('recommend:'));
+export const publicSettingsRows=(rows:{key:string;value:string}[])=>rows.filter(row=>!row.key.startsWith(prefix)&&!row.key.startsWith('recommend:')&&!row.key.startsWith('live:'));
 export async function readRatingConfig(db:any,env:NodeJS.ProcessEnv=process.env){const rows=await db.setting.findMany({where:{key:{in:[prefix+'enabled',prefix+'token']}}});const settings=Object.fromEntries(rows.map((x:any)=>[x.key,x.value]));return {enabled:settings[prefix+'enabled']!=='false',token:String(env.TMDB_READ_ACCESS_TOKEN||settings[prefix+'token']||'').trim()};}
 const normal=(text:string)=>text.normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]/gu,'');
 function mediaType(category=''):'movie'|'tv'|undefined{
