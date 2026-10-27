@@ -14,6 +14,7 @@ import {createInstallation} from './installation.js';
 import {registerUpdates} from './updates.js';
 import {trustedBrowserOrigin} from './origin.js';
 import {registerLive} from './live.js';
+import {cleanVideoCover,cleanVideoTitle,resolveVideoMeta} from './video-meta.js';
 const releaseInfo=require('../../scripts/releases.cjs').current();
 const databaseTools=require('../../scripts/database-config.cjs');
 const databaseConfig=databaseTools.applyDatabaseEnvironment();
@@ -178,9 +179,35 @@ registerCatalog(app,db,{requireUser});
 registerRecommendations(app,db,{requireUser,canSource});
 app.get('/api/sources/:key/videos/:id',async(req,r)=>{const started=performance.now();const s=await db.source.findUnique({where:{key:req.params.key}});if(!s)return r.status(404).json({error:'源不存在'});const sourceResolved=performance.now();const local=await db.video.findUnique({where:{id:req.params.id}});if(local&&local.sourceKey===s.key){if(!local.visible)return r.status(404).json({error:"影片已隐藏"});const detailResolved=performance.now();r.setHeader('Server-Timing',`source;dur=${(sourceResolved-started).toFixed(1)}, local;dur=${(detailResolved-sourceResolved).toFixed(1)}, total;dur=${(detailResolved-started).toFixed(1)}`);return r.json((await localPublic(s,[local],true))[0])}const v=await remoteDetail(s,req.params.id);const detailResolved=performance.now();r.setHeader('Server-Timing',`source;dur=${(sourceResolved-started).toFixed(1)}, detail;dur=${(detailResolved-sourceResolved).toFixed(1)}, total;dur=${(detailResolved-started).toFixed(1)}`);v?r.json(publicVideo(s,v,true)):r.status(404).json({error:'视频不存在'})});
 app.get('/api/play',async(_,r)=>r.status(410).json({error:'实时模式不需要单独查询播放记录'}));
-app.use('/api/favorites',async(req:any,res:any,next:any)=>{const u=await requireUser(req,res);if(u){req.authUser=u;next()}}); app.get('/api/favorites',async(req:any,r)=>r.json(await db.favorite.findMany({where:{userId:req.authUser.id},orderBy:{createdAt:'desc'}}))); app.post('/api/favorites',async(req:any,r)=>{const u=req.authUser;const existing=await db.favorite.findFirst({where:{userId:u.id,sourceKey:String(req.body.sourceKey),videoId:String(req.body.videoId)}});if(existing)return r.json(existing);r.json(await db.favorite.create({data:{userId:u.id,sourceKey:String(req.body.sourceKey),videoId:String(req.body.videoId),title:String(req.body.title),cover:req.body.cover?String(req.body.cover):null}}))}); app.delete('/api/favorites/:id',async(req:any,r)=>{await db.favorite.deleteMany({where:{id:+req.params.id,userId:req.authUser.id}});r.json({ok:true})});
+app.use('/api/favorites',async(req:any,res:any,next:any)=>{const u=await requireUser(req,res);if(u){req.authUser=u;next()}});
+app.get('/api/favorites',async(req:any,r)=>r.json(await db.favorite.findMany({where:{userId:req.authUser.id},orderBy:{createdAt:'desc'}})));
+app.post('/api/favorites',async(req:any,r)=>{
+  const u=req.authUser,body=req.body||{},sourceKey=String(body.sourceKey),videoId=String(body.videoId);
+  const existing=await db.favorite.findFirst({where:{userId:u.id,sourceKey,videoId}});
+  if(existing&&cleanVideoTitle(existing.title))return r.json(existing);
+  const meta=await resolveVideoMeta(db,remoteDetail,sourceKey,videoId,body.title,cleanVideoCover(body.cover)||cleanVideoCover(existing?.cover));
+  if(existing)return r.json(meta.title?await db.favorite.update({where:{id:existing.id},data:{title:meta.title,cover:meta.cover}}):existing);
+  if(!meta.title)return r.status(422).json({error:'无法获取影片标题，请稍后重试'});
+  r.json(await db.favorite.create({data:{userId:u.id,sourceKey,videoId,title:meta.title,cover:meta.cover}}));
+});
+app.delete('/api/favorites/:id',async(req:any,r)=>{await db.favorite.deleteMany({where:{id:+req.params.id,userId:req.authUser.id}});r.json({ok:true})});
 app.use('/api/history',async(req:any,res:any,next:any)=>{const u=await requireUser(req,res);if(u){req.authUser=u;next()}});
-app.get('/api/history',async(req:any,r)=>{const u=req.authUser||await currentUser(req);r.json(await db.watchHistory.findMany({where:{userId:u?.id},orderBy:{updatedAt:'desc'},take:100}))}); app.post('/api/history',async(req:any,r)=>{const u=req.authUser||await currentUser(req);const body=req.body||{};const episodeId=String(body.episodeId||'');let row=await db.watchHistory.findFirst({where:{userId:u.id,sourceKey:String(body.sourceKey),videoId:String(body.videoId),episodeId}});const data={sourceKey:String(body.sourceKey),videoId:String(body.videoId),episodeId,title:String(body.title||''),cover:body.cover?String(body.cover):null,episodeName:body.episodeName?String(body.episodeName):null,progress:Math.max(0,Number(body.progress)||0),duration:Math.max(0,Number(body.duration)||0),completed:Boolean(body.completed)};row=row?await db.watchHistory.update({where:{id:row.id},data}):await db.watchHistory.create({data:{...data,userId:u.id}});await db.user.update({where:{id:u.id},data:{lastActiveAt:new Date()}});r.json(row)}); app.delete('/api/history/:id',async(req:any,r)=>{await db.watchHistory.deleteMany({where:{id:+req.params.id,userId:req.authUser.id}});r.json({ok:true})}); app.delete('/api/history',async(req:any,r)=>{const u=req.authUser||await currentUser(req);await db.watchHistory.deleteMany({where:{userId:u?.id}});r.json({ok:true})});
+app.get('/api/history',async(req:any,r)=>{const u=req.authUser||await currentUser(req);r.json(await db.watchHistory.findMany({where:{userId:u?.id},orderBy:{updatedAt:'desc'},take:100}))});
+app.post('/api/history',async(req:any,r)=>{
+  const u=req.authUser||await currentUser(req),body=req.body||{};
+  const sourceKey=String(body.sourceKey),videoId=String(body.videoId),episodeId=String(body.episodeId||'');
+  let row=await db.watchHistory.findFirst({where:{userId:u.id,sourceKey,videoId,episodeId}});
+  const suppliedTitle=cleanVideoTitle(body.title),storedTitle=cleanVideoTitle(row?.title);
+  const suppliedCover=cleanVideoCover(body.cover),storedCover=cleanVideoCover(row?.cover);
+  // Progress updates are frequent: a usable stored title needs no remote request.
+  const meta=row&&(suppliedTitle||storedTitle)?{title:suppliedTitle||storedTitle,cover:suppliedCover||storedCover}:
+    await resolveVideoMeta(db,remoteDetail,sourceKey,videoId,suppliedTitle||storedTitle,suppliedCover||storedCover);
+  if(!meta.title&&!cleanVideoTitle(row?.title))return r.status(422).json({error:'无法获取影片标题，请稍后重试'});
+  const data={sourceKey,videoId,episodeId,...meta.title?{title:meta.title}:{},cover:meta.cover??cleanVideoCover(row?.cover),episodeName:body.episodeName?String(body.episodeName):null,progress:Math.max(0,Number(body.progress)||0),duration:Math.max(0,Number(body.duration)||0),completed:Boolean(body.completed)};
+  row=row?await db.watchHistory.update({where:{id:row.id},data}):await db.watchHistory.create({data:{...data,title:meta.title,userId:u.id}});
+  await db.user.update({where:{id:u.id},data:{lastActiveAt:new Date()}});r.json(row);
+});
+app.delete('/api/history/:id',async(req:any,r)=>{await db.watchHistory.deleteMany({where:{id:+req.params.id,userId:req.authUser.id}});r.json({ok:true})}); app.delete('/api/history',async(req:any,r)=>{const u=req.authUser||await currentUser(req);await db.watchHistory.deleteMany({where:{userId:u?.id}});r.json({ok:true})});
 app.get('/api/admin/history',async(_,r)=>{const [rows,users]=await Promise.all([db.watchHistory.findMany({orderBy:{updatedAt:'desc'},take:200}),db.user.findMany({select:{id:true,username:true}})]);const names=new Map(users.map(x=>[x.id,x.username]));r.json(rows.map(x=>({...x,username:names.get(x.userId||0)||'未知用户'}))) });
 app.use('/api/settings',async(req:any,res:any,next:any)=>{if(req.method==='POST'&&await requireAdmin(req,res))next();else if(req.method==='GET')next()});
 app.get('/api/settings',async(_,r)=>{if(!installation.installed||!installation.available)return r.json(DEFAULT_SETTINGS);const rows=await db.setting.findMany({where:{NOT:{OR:[{key:{startsWith:'rating:'}},{key:{startsWith:'recommend:'}}]}}});r.json({...DEFAULT_SETTINGS,...Object.fromEntries(publicSettingsRows(rows).map(x=>[x.key,x.value]))})});

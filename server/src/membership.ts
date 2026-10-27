@@ -129,7 +129,9 @@ export function createMembershipService(db:any,clock=()=>new Date()){
       },{isolationLevel:'Serializable',maxWait:5000,timeout:10000});}
       catch(error:any){
         if(error instanceof MembershipError)throw error;
-        if(!['P2034','P2028','P2002'].includes(error.code)||i===4)throw error;
+        // Retrying an uncertain SQLite timeout is safe because every attempt
+        // first checks the unique ledger operation key in the same transaction.
+        if(!['P2034','P2028','P2002','P1008'].includes(error.code)||i===4)throw error;
         await new Promise(resolve=>setTimeout(resolve,30*(i+1)));
       }
     }

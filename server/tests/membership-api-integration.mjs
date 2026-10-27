@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {once} from 'node:events';
 import {createServer} from 'node:net';
+import {createServer as createHttpServer} from 'node:http';
 import {randomUUID} from 'node:crypto';
 import {PrismaClient} from '@prisma/client';
 
@@ -92,6 +93,47 @@ test('real HTTP membership flow enforces privileges, source restrictions, expiry
     assert.equal((await call('/playback-options?sourceKey=premium&videoId=premium%3Aadult',{cookie:userCookie})).status,403);
     assert.equal((await call('/history',{cookie:userCookie,body:{sourceKey:'premium',videoId:'premium:adult',category:'动作片',title:'伪造'}})).status,403);
     assert.equal((await call('/sources/premium/videos/premium%3Aadult',{cookie:adminCookie})).status,200);
+    assert.equal((await call('/favorites',{cookie:userCookie,body:{sourceKey:'premium',videoId:'premium:adult'}})).status,403);
+    const favorite=await call('/favorites',{cookie:userCookie,body:{sourceKey:'premium',videoId:'premium:1'}});
+    assert.equal(favorite.status,200);assert.equal(favorite.data.title,'测试片');
+    await db.favorite.update({where:{id:favorite.data.id},data:{title:'undefined'}});
+    const repaired=await call('/favorites',{cookie:userCookie,body:{sourceKey:'premium',videoId:'premium:1',title:' undefined '}});
+    assert.equal(repaired.data.title,'测试片');
+    const savedFavorite=await call('/favorites',{cookie:userCookie,body:{sourceKey:'premium',videoId:'premium:1'}});
+    assert.equal(savedFavorite.data.id,favorite.data.id);assert.equal(savedFavorite.data.title,'测试片');
+    const history=await call('/history',{cookie:userCookie,body:{sourceKey:'premium',videoId:'premium:1',episodeId:'premium:1:0:0',progress:1}});
+    assert.equal(history.status,200);assert.equal(history.data.title,'测试片');
+    const replayHistory=await call('/history',{cookie:userCookie,body:{sourceKey:'premium',videoId:'premium:1',episodeId:'premium:1:0:0',title:'undefined',progress:3}});
+    assert.equal(replayHistory.status,200);assert.equal(replayHistory.data.title,'测试片');assert.equal(replayHistory.data.progress,3);
+    assert.equal((await call('/history',{cookie:userCookie,body:{sourceKey:'premium',videoId:'premium:missing'}})).status,403);
+    assert.equal((await call('/favorites',{cookie:adminCookie,body:{sourceKey:'premium',videoId:'premium:missing'}})).status,422);
+    assert.equal((await call('/history',{cookie:adminCookie,body:{sourceKey:'premium',videoId:'premium:missing'}})).status,422);
+    let remoteRequests=0;
+    const upstream=createHttpServer((req,res)=>{
+      remoteRequests++;
+      const id=new URL(req.url,'http://localhost').searchParams.get('ids');
+      if(id==='broken'){res.writeHead(503);res.end();return;}
+      res.setHeader('Content-Type','application/json');
+      res.end(JSON.stringify({list:[{vod_id:id,vod_name:id==='untitled'?'':'远程测试片',vod_pic:'https://example.invalid/cover.jpg'}]}));
+    });
+    upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
+    try{
+      await db.source.create({data:{key:'remote-fixture',name:'远程测试源',type:'tvbox-json',api:`http://127.0.0.1:${upstream.address().port}/api.php`}});
+      const remoteFavorite=await call('/favorites',{cookie:adminCookie,body:{sourceKey:'remote-fixture',videoId:'remote-fixture:good'}});
+      assert.equal(remoteFavorite.status,200);assert.equal(remoteFavorite.data.title,'远程测试片');
+      const beforeReplay=remoteRequests;
+      assert.equal((await call('/favorites',{cookie:adminCookie,body:{sourceKey:'remote-fixture',videoId:'remote-fixture:good'}})).data.id,remoteFavorite.data.id);
+      assert.equal(remoteRequests,beforeReplay);
+      assert.equal((await call('/favorites',{cookie:adminCookie,body:{sourceKey:'remote-fixture',videoId:'remote-fixture:untitled'}})).status,422);
+      const explicit=await call('/history',{cookie:adminCookie,body:{sourceKey:'remote-fixture',videoId:'remote-fixture:good',title:'明确标题',cover:'https://example.invalid/explicit.jpg'}});
+      assert.equal(explicit.data.title,'明确标题');assert.equal(explicit.data.cover,'https://example.invalid/explicit.jpg');
+      const firstBroken=await call('/history',{cookie:adminCookie,body:{sourceKey:'remote-fixture',videoId:'remote-fixture:broken',title:'旧标题'}});
+      assert.equal(firstBroken.status,200);assert.equal(firstBroken.data.title,'旧标题');
+      const beforeProgress=remoteRequests;
+      const retained=await call('/history',{cookie:adminCookie,body:{sourceKey:'remote-fixture',videoId:'remote-fixture:broken',title:'undefined',progress:5}});
+      assert.equal(retained.status,200);assert.equal(retained.data.title,'旧标题');assert.equal(retained.data.cover,null);
+      assert.equal(remoteRequests,beforeProgress);
+    }finally{upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));}
     // Group category allow-list and level blacklist compose correctly in real HTTP flows.
     await db.video.update({where:{id:'premium:1'},data:{category:'动作片'}});
     await db.video.create({data:{id:'premium:comedy',sourceKey:'premium',title:'喜剧测试',category:'喜剧片'}});

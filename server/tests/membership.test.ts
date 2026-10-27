@@ -62,6 +62,53 @@ test('repeated/concurrent redemption charges once and updates member expiry in t
   assert.equal(await db.pointLedger.count({where:{kind:'membership_redeem',userId:user.id}}),1);
   const effective=await service.hydrate(saved);assert.deepEqual(effective.permissions,['sources','playback']);assert.deepEqual(effective.sourceAccess,[{sourceKey:'vip-source'}]);
 });
+test('P1008 before and after commit retries by ledger key without a second debit or grant',async()=>{
+  const error=()=>Object.assign(Error('SQLite timeout'),{code:'P1008'});
+  const timeoutUser=await db.user.create({data:{username:'fixture_timeout_user',passwordHash:'fixture',points:500}});
+  let calls=0;
+  const before=new Proxy(db,{get(target,key){
+    if(key==='$transaction')return async(...args:any[])=>{if(++calls===1)throw error();return (target.$transaction as any)(...args)};
+    return Reflect.get(target,key,target);
+  }});
+  const retryBefore=createMembershipService(before,()=>now);
+  const grant={delta:120,reason:'超时重试测试',requestId:randomUUID()};
+  const balance=(await load(timeoutUser.id)).points;
+  const granted=await retryBefore.adjust(admin,timeoutUser.id,grant);
+  assert.equal(granted.replayed,false);assert.equal(calls,2);
+  assert.equal((await load(timeoutUser.id)).points,balance+120);
+  assert.equal(await db.pointLedger.count({where:{operationKey:granted.entry.operationKey}}),1);
+
+  calls=0;
+  const after=new Proxy(db,{get(target,key){
+    if(key==='$transaction')return async(...args:any[])=>{
+      const result=await (target.$transaction as any)(...args);
+      if(++calls===1)throw error();
+      return result;
+    };
+    return Reflect.get(target,key,target);
+  }});
+  const retryAfter=createMembershipService(after,()=>now);
+  const request={planId:plan.id,expectedVersion:plan.version,requestId:randomUUID()};
+  const beforeRedeem=await load(timeoutUser.id);
+  const redeemed=await retryAfter.redeem(timeoutUser,request);
+  assert.equal(redeemed.replayed,true);assert.equal(calls,2);
+  const saved=await load(timeoutUser.id);
+  assert.equal(saved.points,beforeRedeem.points-plan.pricePoints);
+  assert.equal(saved.membershipExpiresAt?.getTime(),now.getTime()+30*86400000);
+  assert.equal(await db.pointLedger.count({where:{operationKey:redeemed.entry.operationKey}}),1);
+});
+test('P1008 has a five-attempt limit and unrelated errors are never retried',async()=>{
+  let attempts=0;
+  const fail=(code:string)=>new Proxy(db,{get(target,key){
+    if(key==='$transaction')return async()=>{attempts++;throw Object.assign(Error(code),{code})};
+    return Reflect.get(target,key,target);
+  }});
+  await assert.rejects(createMembershipService(fail('P1008')).adjust(admin,user.id,{delta:1,reason:'上限测试',requestId:randomUUID()}),(e:any)=>e.code==='P1008');
+  assert.equal(attempts,5);
+  attempts=0;
+  await assert.rejects(createMembershipService(fail('P2024')).adjust(admin,user.id,{delta:1,reason:'非重试测试',requestId:randomUUID()}),(e:any)=>e.code==='P2024');
+  assert.equal(attempts,1);
+});
 test('renewal extends from expiry; changed price, disabled plans and invalid requests do not consume points',async()=>{
   await service.redeem(user,{planId:plan.id,expectedVersion:plan.version,requestId:randomUUID()});
   assert.equal((await load(user.id)).membershipExpiresAt?.toISOString(),'2026-12-20T00:00:00.000Z');
