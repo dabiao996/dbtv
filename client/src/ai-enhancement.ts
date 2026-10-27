@@ -94,7 +94,6 @@ export class AIEnhancementSession {
     this.video.addEventListener('enterpictureinpicture', this.onPiP);
     document.addEventListener('fullscreenchange', this.onFullscreen);
     this.video.addEventListener('webkitbeginfullscreen', this.onNativeFullscreen);
-    this.video.addEventListener('webkitendfullscreen', this.onNativeFullscreen);
     this.video.remote?.addEventListener('connect', this.onCast);
     this.video.addEventListener('webkitcurrentplaybacktargetiswirelesschanged', this.onWirelessTarget);
     document.addEventListener('visibilitychange', this.onVisibility);
@@ -174,7 +173,7 @@ export class AIEnhancementSession {
   private onPiP = () => this.fail('画中画不支持 AI 增强，已恢复原画');
   private onCast = () => this.fail('投屏不支持本机 AI 增强，已恢复原画');
   private onWirelessTarget = () => {if ((this.video as HTMLVideoElement & {webkitCurrentPlaybackTargetIsWireless?: boolean}).webkitCurrentPlaybackTargetIsWireless) this.onCast();};
-  private onNativeFullscreen = () => this.fail('原生全屏不支持增强，已恢复原画');
+  private onNativeFullscreen = () => this.fail('视频原生全屏无法显示增强画布，已恢复原画；请使用「播放器全屏」按钮');
   private onFullscreen = () => {if (document.fullscreenElement === this.video) this.onNativeFullscreen();};
 
   private fail(message: string) {
@@ -200,7 +199,6 @@ export class AIEnhancementSession {
     this.video.removeEventListener('ended', this.onEnded);
     this.video.removeEventListener('enterpictureinpicture', this.onPiP);
     this.video.removeEventListener('webkitbeginfullscreen', this.onNativeFullscreen);
-    this.video.removeEventListener('webkitendfullscreen', this.onNativeFullscreen);
     this.video.remote?.removeEventListener('connect', this.onCast);
     this.video.removeEventListener('webkitcurrentplaybacktargetiswirelesschanged', this.onWirelessTarget);
     document.removeEventListener('fullscreenchange', this.onFullscreen);

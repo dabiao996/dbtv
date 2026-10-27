@@ -52,7 +52,7 @@ function Lab() {
     {fileName && <p>当前文件：{fileName}</p>}
     {url && synthetic && <p><a href={url} download="dbtv-local-test.webm">保存本机测试片段</a></p>}
     <div className="video-shell ai-lab-stage">
-      <video key={`video-${url}`} ref={videoRef} src={url || undefined} controls playsInline loop preload="metadata"/>
+      <video key={`video-${url}`} ref={videoRef} src={url || undefined} controls controlsList="nofullscreen" playsInline loop preload="metadata"/>
       {url && <AIEnhancer key={`ai-${url}`} videoRef={videoRef}/>}
     </div>
     <p className="ai-lab-note">测试时记录浏览器、设备、视频尺寸、原画与增强同尺寸观感，以及平均帧耗时和掉帧数。帧耗时包含 CPU 与 GPU 完成等待，不是画质评分。原生全屏、画中画和投屏会回到原画。</p>
