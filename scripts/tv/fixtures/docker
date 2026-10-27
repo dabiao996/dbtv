@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Isolated test double; never talks to a real Docker socket.
 const fs=require('node:fs');
+const path=require('node:path');
 const args=process.argv.slice(2),file=process.env.DBTV_TEST_DOCKER;
 if(!file)process.exit(90);
 const read=()=>JSON.parse(fs.readFileSync(file,'utf8'));
@@ -16,4 +17,11 @@ else if(action==='up'){
   if(process.env.DBTV_TEST_FAIL_ORIGIN&&env.includes(process.env.DBTV_TEST_FAIL_ORIGIN))process.exit(1);
   state.running=true;save(state);
 } else if(action==='logs')console.log('首次安装令牌：not-for-public-logs\nmysql://admin:private-password@db/app');
+else if(['exec','run'].includes(action)){
+  const directory=args.find(value=>value.startsWith('BACKUP_DIR='))?.slice('BACKUP_DIR='.length);
+  if(!args.includes('scripts/backup-database.mjs')||!/^\/app\/data\/\.snapshot-[a-f0-9-]+$/.test(directory||''))process.exit(91);
+  const volume=config.services['dabiao-tv'].volumes[0].split(':')[0],target=path.join(volume,path.basename(directory));
+  fs.mkdirSync(target,{recursive:true,mode:0o700});
+  fs.writeFileSync(path.join(target,'dabiao-fixture.db'),Buffer.concat([Buffer.from('SQLite format 3\0'),Buffer.alloc(128)]),{mode:0o600});
+}
 else if(!['build'].includes(action))process.exit(91);

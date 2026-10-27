@@ -6,7 +6,7 @@ import path from 'node:path';
 import {generateKeyPairSync,sign,randomUUID} from 'node:crypto';
 import releases from '../releases.cjs';
 import {transition,validateRequest,enable,processUpdate,consume,publicStatus,history} from './updates.mjs';
-import {compose} from './core.mjs';
+import {compose,backupLiveCatalog,restoreLiveCatalog} from './core.mjs';
 import {createDriver} from './update-driver.mjs';
 import http from 'node:http';
 const contract='a'.repeat(64),keys=generateKeyPairSync('ed25519',{publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});
@@ -18,9 +18,9 @@ function remote(version='0.2.0'){
   return {manifest,bytes,signature,fetcher};
 }
 const state={mode:'docker',port:8787,bind:'127.0.0.1',source:'/test/app',node:'/test/node',release:{version:'0.1.0',channel:'development',dataContract:contract}};
-function operations({failHealth=false,failBackup=false}={}){
+function operations({failHealth=false,failBackup=false,failRestore=false}={}){
   const events=[],reports=[],records=[];
-  return {events,reports,records,ops:{report:async value=>reports.push(value),stop:async value=>events.push(`stop:${value.release.version}`),backup:async()=>{events.push('backup');if(failBackup)throw Error('backup failed');return '/private/backup';},record:async value=>{events.push(`record:${value.state}`);records.push(structuredClone(value));},persist:async value=>events.push(`persist:${value.release.version}`),start:async value=>events.push(`start:${value.release.version}`),healthy:async value=>{events.push(`health:${value.release.version}`);if(failHealth&&value.release.version==='0.2.0')throw Error('new unhealthy');}}};
+  return {events,reports,records,ops:{report:async value=>reports.push(value),stop:async value=>events.push(`stop:${value.release.version}`),backup:async()=>{events.push('backup');if(failBackup)throw Error('backup failed');return '/private/backup';},restoreLiveCatalog:async()=>{events.push('restore:live');if(failRestore)throw Error('snapshot invalid');},record:async value=>{events.push(`record:${value.state}`);records.push(structuredClone(value));},persist:async value=>events.push(`persist:${value.release.version}`),start:async value=>events.push(`start:${value.release.version}`),healthy:async value=>{events.push(`health:${value.release.version}`);if(failHealth&&value.release.version==='0.2.0')throw Error('new unhealthy');}}};
 }
 test('stable version comparisons are numeric, prerelease and shell text rejected',()=>{
   assert.equal(releases.compare('1.10.0','1.9.9'),1);assert.equal(releases.compare('1.0.0','1.0.0'),0);
@@ -66,10 +66,31 @@ test('backup failure never launches new code or overwrites a database',async()=>
 test('failed new version rolls back code only when data contract is identical',async()=>{
   const {ops,events}=operations({failHealth:true});const next={...state,release:{...state.release,version:'0.2.0'}};
   const value=await transition({before:state,next,job:{id:randomUUID()},ops});assert.equal(value.state,'rolled-back');assert.equal(events.at(-1),'health:0.1.0');
+  assert.ok(events.indexOf('restore:live')>events.indexOf('stop:0.2.0'));
+  assert.ok(events.indexOf('restore:live')<events.indexOf('start:0.1.0'));
+});
+test('failed launch restores the backed-up live JSON before restarting old code',async t=>{
+  const home=fixture(t),data=path.join(home,'data'),backup=path.join(home,'backup'),file=path.join(data,'live-tv.json');
+  fs.mkdirSync(backup,{mode:0o700});
+  const catalog=name=>JSON.stringify({version:1,sources:[{id:'fixture',name:'Fixture',playlistUrl:'https://example.org/list.m3u',metadataUrl:null}],autoUpdate:false,lastUpdatedAt:null,channels:[{id:'a'.repeat(32),name,country:'CN',categories:['general'],cover:null,lines:[{url:'https://example.org/live.m3u8?token=private-fixture',name:'Primary',restricted:false}],enabled:true,available:true}]});
+  fs.writeFileSync(file,catalog('Original'),{mode:0o600});
+  const {ops,events}=operations({failHealth:true});
+  ops.backup=async()=>{events.push('backup');const liveTv=backupLiveCatalog(data,backup);fs.writeFileSync(path.join(backup,'backup.json'),JSON.stringify({version:1,id:'dbtv',complete:true,liveTv}),{mode:0o600});return backup;};
+  ops.restoreLiveCatalog=async()=>{events.push('restore:live');restoreLiveCatalog(data,backup);};
+  const start=ops.start;ops.start=async value=>{await start(value);if(value.release.version==='0.2.0')fs.writeFileSync(file,catalog('Changed'),{mode:0o600});};
+  const next={...state,release:{...state.release,version:'0.2.0'}};
+  const result=await transition({before:state,next,job:{id:randomUUID()},ops});
+  assert.equal(result.state,'rolled-back');assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).channels[0].name,'Original');
+  assert.equal(fs.readdirSync(backup).filter(name=>name.startsWith('live-tv-before-restore-')).length,1);
+});
+test('invalid live backup blocks automatic recovery without starting the old code',async()=>{
+  const {ops,events,reports}=operations({failHealth:true,failRestore:true});const next={...state,release:{...state.release,version:'0.2.0'}};
+  const value=await transition({before:state,next,job:{id:randomUUID()},ops});
+  assert.equal(value.state,'blocked');assert.ok(!events.includes('start:0.1.0'));assert.equal(reports.at(-1).state,'blocked');
 });
 test('incompatible data blocks automatic rollback instead of restoring stale user data',async()=>{
   const {ops,events,reports}=operations({failHealth:true});const next={...state,release:{...state.release,version:'0.2.0',dataContract:'e'.repeat(64)}};
-  const value=await transition({before:state,next,job:{id:randomUUID()},ops});assert.equal(value.state,'blocked');assert.ok(!events.includes('start:0.1.0'));assert.equal(reports.at(-1).state,'blocked');
+  const value=await transition({before:state,next,job:{id:randomUUID()},ops});assert.equal(value.state,'blocked');assert.ok(!events.includes('start:0.1.0'));assert.ok(!events.includes('restore:live'));assert.equal(reports.at(-1).state,'blocked');
 });
 test('worker verifies signed release, persists rollback history, and preserves port/data identity',async t=>{
   const home=fixture(t),value=remote(),{ops}=operations();

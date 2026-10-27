@@ -55,7 +55,9 @@ export async function transition({before,next,job,ops,recordID=randomUUID()}){
   }catch(error){
     if(stopped&&(!launched||compatible)){
       try{
-        await ops.stop(next);await ops.persist(before);await ops.start(before);await ops.healthy(before);
+        await ops.stop(next);
+        if(backupPath)await ops.restoreLiveCatalog(backupPath);
+        await ops.persist(before);await ops.start(before);await ops.healthy(before);
         await message('rolled-back','操作未成功，已恢复原程序并通过健康检查；未覆盖数据库');
         return {state:'rolled-back',error:redact(error.message)};
       }catch{await message('blocked','自动恢复未通过健康检查；已保留备份，需管理员检查，未覆盖数据库');return {state:'blocked'};}

@@ -8,7 +8,7 @@ import http from 'node:http';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
-import {portNumber,origin,available,choosePort,save,read,environment,compose,systemdUnit,redact,health,secureCopy} from './core.mjs';
+import {portNumber,origin,available,choosePort,save,read,environment,compose,systemdUnit,redact,health,secureCopy,backupLiveCatalog,restoreLiveCatalog} from './core.mjs';
 const exec=promisify(execFile),root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const cli=path.join(root,'scripts/tv.mjs');
 const temporary=t=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dbtv-deploy-test-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));return dir;};
@@ -78,6 +78,79 @@ test('privileged backup copy refuses symlinks, hardlinks and preexisting destina
   secureCopy(source,target);assert.equal(fs.readFileSync(target,'utf8'),'snapshot');assert.equal(fs.statSync(target).mode&0o777,0o600);assert.throws(()=>secureCopy(source,target));
   fs.symlinkSync(source,path.join(dir,'symlink'));assert.throws(()=>secureCopy(path.join(dir,'symlink'),path.join(dir,'bad-copy')));
   fs.linkSync(source,path.join(dir,'hardlink'));assert.throws(()=>secureCopy(source,path.join(dir,'bad-hard-copy')));
+});
+const catalog=name=>JSON.stringify({version:1,sources:[{id:'fixture',name:'Fixture',playlistUrl:'https://example.org/list.m3u',metadataUrl:null}],autoUpdate:false,lastUpdatedAt:null,channels:[{id:'a'.repeat(32),name,country:'CN',categories:['general'],cover:null,lines:[{url:'https://example.org/live.m3u8?token=private-fixture',name:'Primary',restricted:false}],enabled:true,available:true}]});
+function liveFixture(t){const home=temporary(t),data=path.join(home,'data'),backup=path.join(home,'backup');fs.mkdirSync(data,{mode:0o700});fs.mkdirSync(backup,{mode:0o700});return {data,backup,file:path.join(data,'live-tv.json')};}
+const backupRecord=(backup,liveTv)=>fs.writeFileSync(path.join(backup,'backup.json'),JSON.stringify({version:1,id:'dbtv',complete:true,liveTv}),{mode:0o600});
+test('absent live catalog has an explicit snapshot and failed rollback retains then removes a newly created file',t=>{
+  const {data,backup,file}=liveFixture(t),liveTv=backupLiveCatalog(data,backup);
+  assert.deepEqual(liveTv,{present:false});backupRecord(backup,liveTv);
+  fs.writeFileSync(file,catalog('Created later'),{mode:0o600});
+  assert.deepEqual(restoreLiveCatalog(data,backup),{restored:true});
+  assert.equal(fs.existsSync(file),false);
+  const retained=fs.readdirSync(backup).filter(name=>name.startsWith('live-tv-before-restore-'));
+  assert.equal(retained.length,1);assert.equal(JSON.parse(fs.readFileSync(path.join(backup,retained[0]),'utf8')).channels[0].name,'Created later');
+  assert.equal(fs.statSync(path.join(backup,retained[0])).mode&0o777,0o600);
+  assert.deepEqual(restoreLiveCatalog(data,backup),{restored:false});
+});
+test('private live catalog snapshot restores atomically and retains the failed version privately',t=>{
+  const {data,backup,file}=liveFixture(t),original=catalog('Original'),changed=catalog('Changed after launch');
+  fs.writeFileSync(file,original,{mode:0o600});const liveTv=backupLiveCatalog(data,backup);backupRecord(backup,liveTv);
+  assert.equal(liveTv.present,true);assert.match(liveTv.sha256,/^[a-f0-9]{64}$/);
+  assert.equal(fs.readFileSync(path.join(backup,'live-tv.json'),'utf8'),original);
+  assert.equal(fs.statSync(path.join(backup,'live-tv.json')).mode&0o777,0o600);
+  assert.ok(!fs.readFileSync(path.join(backup,'backup.json'),'utf8').includes('private-fixture'));
+  fs.writeFileSync(file,changed,{mode:0o600});
+  assert.deepEqual(restoreLiveCatalog(data,backup),{restored:true});
+  assert.equal(fs.readFileSync(file,'utf8'),original);assert.equal(fs.statSync(file).mode&0o777,0o600);
+  assert.equal(fs.statSync(file).uid,fs.statSync(data).uid);
+  const retained=fs.readdirSync(backup).filter(name=>name.startsWith('live-tv-before-restore-'));
+  assert.equal(retained.length,1);assert.equal(fs.readFileSync(path.join(backup,retained[0]),'utf8'),changed);
+  assert.equal(fs.statSync(path.join(backup,retained[0])).mode&0o777,0o600);
+  assert.ok(!fs.readdirSync(data).some(name=>name.startsWith('.live-tv-restore-')));
+  assert.deepEqual(restoreLiveCatalog(data,backup),{restored:false});
+});
+test('damaged, public, linked or tampered live catalogs never become a complete backup or overwrite current data',t=>{
+  const {data,backup,file}=liveFixture(t);
+  for(const invalid of ['{broken',JSON.stringify({version:1,sources:[{}],channels:[{id:'bad'}],autoUpdate:false,lastUpdatedAt:null})]){
+    fs.writeFileSync(file,invalid,{mode:0o600});assert.throws(()=>backupLiveCatalog(data,backup),error=>/直播 JSON/.test(error.message)&&!error.message.includes('private-fixture'));
+    assert.equal(fs.existsSync(path.join(backup,'live-tv.json')),false);
+  }
+  fs.truncateSync(file,30*1024*1024+1);assert.throws(()=>backupLiveCatalog(data,backup),/直播 JSON/);
+  fs.writeFileSync(file,catalog('Original'),{mode:0o600});fs.chmodSync(file,0o644);assert.throws(()=>backupLiveCatalog(data,backup),/直播 JSON/);
+  fs.chmodSync(file,0o600);const linked=path.join(data,'linked');fs.linkSync(file,linked);assert.throws(()=>backupLiveCatalog(data,backup),/直播 JSON/);fs.unlinkSync(linked);
+  fs.unlinkSync(file);fs.symlinkSync(path.join(data,'missing'),file);assert.throws(()=>backupLiveCatalog(data,backup),/直播 JSON/);fs.unlinkSync(file);
+  fs.writeFileSync(file,catalog('Original'),{mode:0o600});
+  fs.chmodSync(backup,0o755);assert.throws(()=>backupLiveCatalog(data,backup),/直播 JSON/);fs.chmodSync(backup,0o700);
+  fs.writeFileSync(file,catalog('Original'),{mode:0o600});const liveTv=backupLiveCatalog(data,backup);backupRecord(backup,liveTv);
+  fs.writeFileSync(file,catalog('Current'),{mode:0o600});
+  fs.chmodSync(path.join(backup,'live-tv.json'),0o644);assert.throws(()=>restoreLiveCatalog(data,backup),/直播 JSON/);
+  fs.chmodSync(path.join(backup,'live-tv.json'),0o600);
+  fs.writeFileSync(path.join(backup,'live-tv.json'),catalog('Tampered'));
+  assert.throws(()=>restoreLiveCatalog(data,backup),/直播 JSON/);
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).channels[0].name,'Current');
+  assert.ok(!fs.readdirSync(data).some(name=>name.startsWith('.live-tv-restore-')));
+});
+test('managed backup CLI includes private live JSON, records absence and refuses damaged input',async t=>{
+  const {home,env}=fixture(t,{running:true}),data=path.join(home,'data'),file=path.join(data,'live-tv.json');
+  fs.mkdirSync(data,{mode:0o700});fs.writeFileSync(file,catalog('Private channel'),{mode:0o600});
+  const first=await run(['backup','--home',home,'--json'],env);
+  assert.equal(first.code,0,first.stderr);const firstPath=JSON.parse(first.stdout).path;
+  const firstRecord=JSON.parse(fs.readFileSync(path.join(firstPath,'backup.json'),'utf8'));
+  assert.equal(firstRecord.complete,true);assert.equal(firstRecord.liveTv.present,true);
+  assert.equal(fs.readFileSync(path.join(firstPath,'live-tv.json'),'utf8'),fs.readFileSync(file,'utf8'));
+  assert.equal(fs.statSync(path.join(firstPath,'live-tv.json')).mode&0o777,0o600);
+  assert.ok(!first.stdout.includes('private-fixture'));assert.ok(!JSON.stringify(firstRecord).includes('private-fixture'));
+  fs.unlinkSync(file);
+  const absent=await run(['backup','--home',home,'--json'],env);assert.equal(absent.code,0,absent.stderr);
+  const absentPath=JSON.parse(absent.stdout).path;
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(absentPath,'backup.json'),'utf8')).liveTv,{present:false});
+  assert.equal(fs.existsSync(path.join(absentPath,'live-tv.json')),false);
+  fs.writeFileSync(file,'{broken',{mode:0o600});
+  const broken=await run(['backup','--home',home,'--json'],env);
+  assert.equal(broken.code,1);assert.ok(!broken.stdout.includes('private-fixture'));
+  const folders=fs.readdirSync(path.join(home,'backups')).map(name=>path.join(home,'backups',name));
+  assert.equal(folders.filter(folder=>fs.existsSync(path.join(folder,'backup.json'))).length,2);
 });
 test('dry-run is machine readable and creates no installation files',async t=>{
   const home=path.join(temporary(t),'not-created');const result=await run(['install','--dry-run','--home',home,'--port','39147','--json']);

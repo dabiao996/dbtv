@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline/promises';
 import {randomUUID,createHash} from 'node:crypto';
-import {APP,DEFAULT_PORT,portNumber,origin,available,choosePort,privateDirectory,atomic,secureCopy,read,save,environment,writeEnvironment,addresses,health,redact,compose,systemdUnit} from './tv/core.mjs';
+import {APP,DEFAULT_PORT,portNumber,origin,available,choosePort,privateDirectory,atomic,secureCopy,backupLiveCatalog,read,save,environment,writeEnvironment,addresses,health,redact,compose,systemdUnit} from './tv/core.mjs';
 import releases from './releases.cjs';
 import * as updates from './tv/updates.mjs';
 import {createDriver} from './tv/update-driver.mjs';
@@ -147,8 +147,13 @@ async function backup(home,state,{offline=false}={}) {
     }
     secureCopy(path.join(home,'deployment.json'),path.join(target,'deployment.json'));
     secureCopy(path.join(home,'app.env'),path.join(target,'app.env'));
+    const liveTv=backupLiveCatalog(path.join(home,'data'),target);
     for(const filename of fs.readdirSync(target))fs.chmodSync(path.join(target,filename),0o600);
-    atomic(path.join(target,'backup.json'),JSON.stringify({version:1,id:'dbtv',createdAt:new Date().toISOString(),complete:true}));
+    const record=path.join(target,'backup.json');
+    atomic(record,JSON.stringify({version:1,id:'dbtv',createdAt:new Date().toISOString(),complete:true,liveTv}));
+    const marker=fs.openSync(record,'r');try{fs.fsyncSync(marker);}finally{fs.closeSync(marker);}
+    const backupDirectory=fs.openSync(target,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);
+    try{fs.fsyncSync(backupDirectory);}finally{fs.closeSync(backupDirectory);}
     return target;
   } catch(error) {throw Error(`${error.message}；此备份未完成，不可用于恢复。外部数据库请用面板/官方备份工具，并另存 data 私有配置`);}
   finally {if(directoryFD!==undefined)fs.closeSync(directoryFD);if(fs.existsSync(scratch)&&!fs.lstatSync(scratch).isSymbolicLink())fs.rmSync(scratch,{recursive:true});}

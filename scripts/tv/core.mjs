@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import os from 'node:os';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 
 export const DEFAULT_PORT = 8787;
 export const APP = {id:'dbtv', name:'大彪TV', adapterVersion:1, defaultPort:DEFAULT_PORT};
@@ -79,7 +79,125 @@ export function secureCopy(source,target) {
     output=fs.openSync(target,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);
     const buffer=Buffer.alloc(1024*1024);let count;
     while((count=fs.readSync(input,buffer,0,buffer.length,null))>0){let written=0;while(written<count)written+=fs.writeSync(output,buffer,written,count-written);}
+    fs.fsyncSync(output);
   } finally {if(input!==undefined)fs.closeSync(input);if(output!==undefined)fs.closeSync(output);}
+}
+const liveLimit=30*1024*1024;
+const liveFailure=()=>Error('直播 JSON 损坏或私有文件权限不安全，未切换程序版本');
+const bounded=(value,max)=>typeof value==='string'&&value.length>0&&value.length<=max;
+function liveHttpUrl(value){
+  if(!bounded(value,4096))return false;
+  try {const url=new URL(value);return ['http:','https:'].includes(url.protocol)&&!url.username&&!url.password;}
+  catch{return false;}
+}
+function validLiveCatalog(value){
+  if(!value||value.version!==1||!Array.isArray(value.sources)||!value.sources.length||value.sources.length>8||
+    !Array.isArray(value.channels)||value.channels.length>100000||typeof value.autoUpdate!=='boolean'||
+    value.lastUpdatedAt!==null&&(typeof value.lastUpdatedAt!=='string'||Number.isNaN(Date.parse(value.lastUpdatedAt)))||
+    value.sources.some(source=>!source||!bounded(source.id,64)||!bounded(source.name,120)||!liveHttpUrl(source.playlistUrl)||
+      source.metadataUrl!==null&&!liveHttpUrl(source.metadataUrl)))return false;
+  const ids=new Set();
+  for(const channel of value.channels){
+    if(!channel||typeof channel.id!=='string'||!/^[a-f0-9]{32}$/.test(channel.id)||ids.has(channel.id)||
+      !bounded(channel.name,250)||typeof channel.country!=='string'||!/^[A-Z]{2}$/.test(channel.country)||
+      !Array.isArray(channel.categories)||!channel.categories.length||channel.categories.length>20||
+      channel.categories.some(category=>!bounded(category,64))||
+      channel.cover!==null&&!liveHttpUrl(channel.cover)||!Array.isArray(channel.lines)||!channel.lines.length||channel.lines.length>30||
+      channel.lines.some(line=>!line||!liveHttpUrl(line.url)||!bounded(line.name,250)||typeof line.restricted!=='boolean')||
+      typeof channel.enabled!=='boolean'||typeof channel.available!=='boolean')return false;
+    ids.add(channel.id);
+  }
+  return true;
+}
+function privateFile(file,{catalog=false,limit=liveLimit}={}) {
+  let fd;
+  try {
+    fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW|fs.constants.O_NONBLOCK);
+    const stat=fs.fstatSync(fd);
+    if(!stat.isFile()||stat.nlink!==1||(stat.mode&0o077)||stat.size<2||stat.size>limit)throw liveFailure();
+    const bytes=Buffer.alloc(stat.size);let offset=0;
+    while(offset<bytes.length){const read=fs.readSync(fd,bytes,offset,bytes.length-offset,null);if(!read)throw liveFailure();offset+=read;}
+    const after=fs.fstatSync(fd);
+    if(after.ino!==stat.ino||after.size!==stat.size||after.mtimeMs!==stat.mtimeMs)throw liveFailure();
+    if(catalog){
+      const value=JSON.parse(bytes.toString('utf8'));
+      if(!validLiveCatalog(value))throw liveFailure();
+    }
+    return {bytes,sha256:createHash('sha256').update(bytes).digest('hex')};
+  } catch {throw liveFailure();}
+  finally {if(fd!==undefined)fs.closeSync(fd);}
+}
+function optionalPrivateFile(file,options){
+  try {fs.lstatSync(file);}catch(error){if(error.code==='ENOENT')return null;throw liveFailure();}
+  return privateFile(file,options);
+}
+function pinnedFolder(directory,requirePrivate=false){
+  let fd;
+  try {
+    fd=fs.openSync(directory,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);
+    const stat=fs.fstatSync(fd);
+    if(!stat.isDirectory()||requirePrivate&&(stat.mode&0o077))throw liveFailure();
+    return {fd,stat,path:process.platform==='linux'?`/proc/self/fd/${fd}`:directory};
+  }catch{if(fd!==undefined)fs.closeSync(fd);throw liveFailure();}
+}
+function writePrivateBytes(file,bytes,owner){
+  const fd=fs.openSync(file,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,0o600);
+  try {
+    fs.writeFileSync(fd,bytes);
+    if(owner){
+      if(process.getuid?.()===0)fs.fchownSync(fd,owner.uid,owner.gid);
+      else if(process.getuid?.()!==owner.uid)throw liveFailure();
+    }
+    fs.fsyncSync(fd);
+  }finally{fs.closeSync(fd);}
+}
+export function backupLiveCatalog(dataDirectory,backupDirectory){
+  const data=pinnedFolder(dataDirectory);let backup;
+  try {
+    backup=pinnedFolder(backupDirectory,true);
+    const value=optionalPrivateFile(path.join(data.path,'live-tv.json'),{catalog:true});
+    if(!value)return {present:false};
+    writePrivateBytes(path.join(backup.path,'live-tv.json'),value.bytes);
+    fs.fsyncSync(backup.fd);
+    return {present:true,sha256:value.sha256};
+  }finally{fs.closeSync(data.fd);if(backup)fs.closeSync(backup.fd);}
+}
+export function restoreLiveCatalog(dataDirectory,backupDirectory){
+  const data=pinnedFolder(dataDirectory);let backup;
+  try {
+    backup=pinnedFolder(backupDirectory,true);
+    const record=privateFile(path.join(backup.path,'backup.json'),{limit:65536});let metadata;
+    try {metadata=JSON.parse(record.bytes.toString('utf8'));}catch{throw liveFailure();}
+    const saved=metadata?.liveTv;
+    if(metadata?.complete!==true||metadata.id!=='dbtv'||!saved||typeof saved.present!=='boolean')throw liveFailure();
+    if(!saved.present){
+      if(optionalPrivateFile(path.join(backup.path,'live-tv.json')))throw liveFailure();
+      const target=path.join(data.path,'live-tv.json'),current=optionalPrivateFile(target);
+      if(!current)return {restored:false};
+      writePrivateBytes(path.join(backup.path,`live-tv-before-restore-${randomUUID()}.json`),current.bytes);
+      fs.fsyncSync(backup.fd);
+      fs.unlinkSync(target);fs.fsyncSync(data.fd);
+      return {restored:true};
+    }
+    if(!/^[a-f0-9]{64}$/.test(saved.sha256||''))throw liveFailure();
+    const snapshot=privateFile(path.join(backup.path,'live-tv.json'),{catalog:true});
+    if(snapshot.sha256!==saved.sha256)throw liveFailure();
+    const target=path.join(data.path,'live-tv.json');
+    const current=optionalPrivateFile(target);
+    if(current?.sha256===snapshot.sha256)return {restored:false};
+    // Keep any version written during a failed launch for manual inspection.
+    if(current){
+      writePrivateBytes(path.join(backup.path,`live-tv-before-restore-${randomUUID()}.json`),current.bytes);
+      fs.fsyncSync(backup.fd);
+    }
+    const temp=path.join(data.path,`.live-tv-restore-${randomUUID()}.tmp`);
+    try {
+      writePrivateBytes(temp,snapshot.bytes,data.stat);
+      fs.renameSync(temp,target);
+      fs.fsyncSync(data.fd);
+    }finally{if(fs.existsSync(temp))fs.unlinkSync(temp);}
+    return {restored:true};
+  }finally{fs.closeSync(data.fd);if(backup)fs.closeSync(backup.fd);}
 }
 export function save(home,state) {atomic(path.join(home,'deployment.json'),`${JSON.stringify(state,null,2)}\n`);}
 export function read(home) {
