@@ -10,15 +10,14 @@ function version(value){
 }
 function compare(a,b){const x=version(a).split('.').map(Number),y=version(b).split('.').map(Number);for(let i=0;i<3;i++)if(x[i]!==y[i])return x[i]>y[i]?1:-1;return 0;}
 function dataContract(root){
-  // Conservative: all backend and migration code must be identical for automatic code rollback.
+  // Database shape and explicit migration helpers define automatic version compatibility.
+  // Older releases used a broader backend hash; those hashes remain incompatible by default.
   const hash=crypto.createHash('sha256');
-  for(const dir of ['prisma','server/src','scripts']){
-    function visit(folder){for(const name of fs.readdirSync(folder).sort()){
-      const file=path.join(folder,name),rel=path.relative(root,file).replaceAll('\\','/');
-      if(fs.lstatSync(file).isSymbolicLink())throw Error('发行包不能包含符号链接');
-      if(fs.statSync(file).isDirectory()){if(name!=='tv')visit(file);}
-      else if(/\.(ts|mjs|cjs|prisma|sh)$/.test(name)&&!['tv.mjs','releases.cjs','release-build.mjs','release-keys.mjs'].includes(name))hash.update(rel+'\0').update(fs.readFileSync(file));
-    }}visit(path.join(root,dir));
+  for(const rel of ['prisma/schema.prisma','scripts/database.mjs','scripts/database-config.cjs','scripts/prepare-member-identity.mjs','scripts/web-database-worker.cjs','scripts/web-database.cjs','server/src/installation.ts']){
+    const file=path.join(root,rel);
+    if(!fs.existsSync(file))continue;
+    if(!fs.lstatSync(file).isFile()||fs.lstatSync(file).isSymbolicLink())throw Error('发行包不能包含符号链接或特殊文件');
+    hash.update(rel+'\0').update(fs.readFileSync(file));
   }
   return hash.digest('hex');
 }
@@ -65,4 +64,10 @@ async function release({tag,key,fetcher=fetch}={}){
   if(manifest.version!==selected)throw Error('签名清单与发行版本不一致');
   return {manifest,bytes,signature,url:`https://github.com/${REPOSITORY}/releases/tag/v${selected}`,notes:typeof value.body==='string'?value.body.slice(0,8000):''};
 }
-module.exports={REPOSITORY,version,compare,current,dataContract,publicKey,verifyManifest,validateManifest,release,download};
+async function versions({fetcher=fetch}={}){
+  const raw=await download(`${BASE}?per_page=20`,{fetcher,limit:256*1024});
+  let values;try{values=JSON.parse(raw);}catch{throw Error('GitHub版本列表无效');}
+  if(!Array.isArray(values))throw Error('GitHub版本列表无效');
+  return [...new Set(values.filter(item=>item&&!item.draft&&!item.prerelease&&typeof item.tag_name==='string'&&/^v(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})$/.test(item.tag_name)).map(item=>item.tag_name.slice(1)))].slice(0,20).map(value=>({version:value,url:`https://github.com/${REPOSITORY}/releases/tag/v${value}`}));
+}
+module.exports={REPOSITORY,version,compare,current,dataContract,publicKey,verifyManifest,validateManifest,release,versions,download};

@@ -38,15 +38,13 @@ export function enable(home,key){
 }
 // All privileged effects are injected: tests never need root or a real Docker daemon.
 export async function transition({before,next,job,ops,recordID=randomUUID()}){
-  let stopped=false,launched=false,backupPath=null;
+  let stopped=false,launched=false;
   const compatible=/^[a-f0-9]{64}$/.test(before.release?.dataContract||'')&&before.release.dataContract===next.release?.dataContract;
   const message=(state,text)=>ops.report({id:job.id,state,version:next.release.version,message:text,at:new Date().toISOString()});
-  await message('running','准备完成，正在停止站点并备份；更新期间暂时不可访问');
+  await message('running','正在切换程序；不会自动备份或覆盖数据库、直播 JSON，更新期间暂时不可访问');
   try{
     await ops.stop(before);stopped=true;
-    backupPath=await ops.backup(before);
-    if(!backupPath)throw Error('未获得完整备份，禁止更新');
-    const record={id:recordID,at:new Date().toISOString(),previous:before,next,backup:backupPath,dataContract:next.release.dataContract,state:'prepared'};
+    const record={id:recordID,at:new Date().toISOString(),previous:before,next,backup:null,dataContract:next.release.dataContract,state:'prepared'};
     await ops.record(record); // durable record BEFORE switching, for crash recovery.
     await ops.persist(next);launched=true;
     await ops.start(next);await ops.healthy(next);
@@ -56,27 +54,27 @@ export async function transition({before,next,job,ops,recordID=randomUUID()}){
     if(stopped&&(!launched||compatible)){
       try{
         await ops.stop(next);
-        if(backupPath)await ops.restoreLiveCatalog(backupPath);
         await ops.persist(before);await ops.start(before);await ops.healthy(before);
-        await message('rolled-back','操作未成功，已恢复原程序并通过健康检查；未覆盖数据库');
+        await message('rolled-back','操作未成功，已恢复原程序并通过健康检查；数据库和直播 JSON 未回退，也没有自动备份');
         return {state:'rolled-back',error:redact(error.message)};
-      }catch{await message('blocked','自动恢复未通过健康检查；已保留备份，需管理员检查，未覆盖数据库');return {state:'blocked'};}
+      }catch{await message('blocked','自动恢复未通过健康检查；没有自动备份，需管理员检查程序和依赖，未覆盖数据库');return {state:'blocked'};}
     }
-    if(stopped){await ops.stop(next).catch(()=>{});await message('blocked','新版本未通过且数据兼容性不能确认，已停止程序；请检查备份后人工恢复，未擅自回写旧数据库');return {state:'blocked'};}
+    if(stopped){await ops.stop(next).catch(()=>{});await message('blocked','新版本未通过且数据兼容性不能确认，已停止程序；没有自动备份，需人工处理，未擅自回写旧数据库');return {state:'blocked'};}
     await message('failed','准备或停止服务失败，未切换程序版本');return {state:'failed',error:redact(error.message)};
   }
 }
 export async function processUpdate(home,state,request,driver,{fetcher=fetch}={}){
   validateRequest(request);const trusted=policy(home),root=path.join(home,'updates');privateDirectory(root);
-  if(privateJSON(path.join(root,'active.json')))throw Error('上次更新未正常结束，请主机管理员检查记录和备份，禁止盲目继续');
+  if(privateJSON(path.join(root,'active.json')))throw Error('上次更新未正常结束，请主机管理员检查程序状态，禁止盲目继续');
   const choice=privateJSON(path.join(home,'data/database.json'));
-  if(choice&&choice.provider!=='sqlite')throw Error('外部数据库须先建立独立备份/迁移流程，本版拒绝自动升级MySQL/PostgreSQL');
+  if(choice&&choice.provider!=='sqlite')throw Error('旧托管更新流程尚未支持外部数据库，未改动程序或数据');
   if(!await driver.ready(state))throw Error('当前站点未安装或不健康，禁止以更新代替修复');
   let before={...state,release:state.release||releases.current(state.source)},next;
   if(request.action==='update'){
     const remote=await releases.release({tag:request.target,key:trusted.publicKey,fetcher});
     const comparison=releases.compare(remote.manifest.version,before.release.version);
-    if(comparison<0||comparison===0&&before.release.channel!=='development')throw Error('升级目标必须高于当前正式版，或将同版本开发版切换为正式版；降级请用回退记录');
+    if(comparison===0&&before.release.channel!=='development')throw Error('当前已是所选正式版');
+    if(remote.manifest.dataContract!==before.release.dataContract)throw Error('数据库兼容标识不同；未切换程序，需单独决定迁移方式');
     next=await driver.prepare(state,remote);
     next={...next,release:{version:remote.manifest.version,channel:'stable',revision:remote.manifest.revision,dataContract:remote.manifest.dataContract}};
   }else{

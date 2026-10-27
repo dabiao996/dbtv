@@ -18,8 +18,9 @@ function fixture(t){
   const env={...process.env,RELEASE_TAG:'v0.2.0',GITHUB_SHA:'b'.repeat(40),RELEASE_SIGNING_KEY:keys.privateKey};
   return {root,keys,env};
 }
-test('data contract changes for migration/backend edits, not frontend-only edits',t=>{
+test('data contract changes for schema or migration edits, not ordinary program edits',t=>{
   const {root}=fixture(t),before=releases.dataContract(root);fs.writeFileSync(path.join(root,'client/ui.tsx'),'new look');assert.equal(releases.dataContract(root),before);
+  fs.writeFileSync(path.join(root,'server/src/index.ts'),'new server code');assert.equal(releases.dataContract(root),before);
   fs.writeFileSync(path.join(root,'scripts/database.mjs'),'new migration');assert.notEqual(releases.dataContract(root),before);
 });
 test('actual release tooling stamps, filters a git source archive and verifies its signature',t=>{

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import releases from '../releases.cjs';
-import {privateDirectory,health,restoreLiveCatalog} from './core.mjs';
+import {privateDirectory,health} from './core.mjs';
 
 export function createDriver(home,adapter){
   const inspect=image=>{
@@ -61,8 +61,6 @@ export function createDriver(home,adapter){
       else if(!fs.existsSync(path.join(state.source,'server/dist/index.js'))||releases.dataContract(state.source)!==state.release.dataContract)throw Error('旧程序文件已变化或缺失，拒绝回退');
     },
     stop:async state=>adapter.service(home,state,'stop'),
-    backup:async state=>adapter.backup(home,state,{offline:true}),
-    restoreLiveCatalog:async backupPath=>restoreLiveCatalog(path.join(home,'data'),backupPath),
     persist:async state=>adapter.persist(home,state),
     start:async state=>adapter.service(home,state,'start'),
     healthy:async state=>{

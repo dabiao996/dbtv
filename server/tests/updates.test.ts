@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {generateKeyPairSync,sign} from 'node:crypto';
+import {generateKeyPairSync,sign,randomUUID} from 'node:crypto';
 import express from 'express';
 import {createUpdates,registerUpdates} from '../src/updates.js';
 import {trustedBrowserOrigin} from '../src/origin.js';
@@ -24,14 +24,54 @@ test('unconfigured and unreachable release checks are explicit errors, never fak
   const keys=generateKeyPairSync('ed25519',{publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});
   const failed=createUpdates({root,key:keys.publicKey,fetcher:async()=>new Response('',{status:404})});assert.equal((await failed.check()).state,'error');
 });
-test('check is cached; queue only accepts latest verified target and keeps passwords out of files',async t=>{
+test('check is cached; queue only accepts verified targets and keeps passwords out of files',async t=>{
   const root=fixture(t),keys=generateKeyPairSync('ed25519',{publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});
   const value={schemaVersion:1,repository:'dabiao996/dbtv',version:'0.2.0',revision:'b'.repeat(40),dataContract:contract,image:'ghcr.io/dabiao996/dbtv@sha256:'+'c'.repeat(64),source:{url:'https://github.com/dabiao996/dbtv/releases/download/v0.2.0/dbtv-source.tar.gz',sha256:'d'.repeat(64)}};
   const bytes=Buffer.from(JSON.stringify(value)),sig=sign(null,bytes,keys.privateKey).toString('base64');let calls=0;
   const fetcher:any=async(url:string)=>{calls++;return url.endsWith('.json')?new Response(bytes):url.endsWith('.sig')?new Response(sig):Response.json({tag_name:'v0.2.0',body:'safe notes'});};
-  const service=createUpdates({root,key:keys.publicKey,fetcher});await Promise.all([service.check(),service.check(true)]);assert.equal(calls,3);assert.equal(service.info().check.available,true);await service.check(true);assert.equal(calls,3);
+  const service=createUpdates({root,key:keys.publicKey,fetcher});await Promise.all([service.check(),service.check(true)]);assert.equal(calls,4);assert.equal(service.info().check.available,true);await service.check(true);assert.equal(calls,4);
   const directory=path.join(root,'data/updates');fs.mkdirSync(directory,{recursive:true});fs.writeFileSync(path.join(directory,'status.json'),JSON.stringify({enabled:true,history:[]}));
-  assert.throws(()=>service.queue('update','9.9.9',1));const queued=service.queue('update','0.2.0',1);assert.equal(queued.state,'queued');const file=path.join(directory,'request.json');assert.equal(fs.statSync(file).mode&0o777,0o600);assert.equal(fs.readFileSync(file,'utf8').includes('password'),false);assert.throws(()=>service.queue('update','0.2.0',1),/已有/);
+  await assert.rejects(service.queue('update','9.9.9',1));const queued=await service.queue('update','0.2.0',1);assert.equal(queued.state,'queued');const file=path.join(directory,'request.json');assert.equal(fs.statSync(file).mode&0o777,0o600);assert.equal(fs.readFileSync(file,'utf8').includes('password'),false);await assert.rejects(service.queue('update','0.2.0',1),/已有/);
+});
+test('admin may select an older signed compatible release from the fixed repository',async t=>{
+  const root=fixture(t),keys=generateKeyPairSync('ed25519',{publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});
+  fs.writeFileSync(path.join(root,'release.json'),JSON.stringify({version:'0.2.0',channel:'stable',dataContract:contract}));
+  const value={schemaVersion:1,repository:'dabiao996/dbtv',version:'0.1.0',revision:'b'.repeat(40),dataContract:contract,image:'ghcr.io/dabiao996/dbtv@sha256:'+'c'.repeat(64),source:{url:'https://github.com/dabiao996/dbtv/releases/download/v0.1.0/dbtv-source.tar.gz',sha256:'d'.repeat(64)}};
+  const bytes=Buffer.from(JSON.stringify(value)),signature=sign(null,bytes,keys.privateKey).toString('base64');
+  const fetcher:any=async(url:string)=>url.includes('?per_page=20')?Response.json([{tag_name:'v0.2.0',draft:false,prerelease:false},{tag_name:'v0.1.0',draft:false,prerelease:false}]):url.endsWith('.json')?new Response(bytes):url.endsWith('.sig')?new Response(signature):Response.json({tag_name:'v0.1.0',draft:false,prerelease:false,body:'older signed release'});
+  let launches=0;const service=createUpdates({root,key:keys.publicKey,fetcher,oneShot:true,launch:async()=>{launches++;}});
+  const checked=await service.check();assert.equal(checked.available,true);assert.deepEqual(checked.choices.map((item:any)=>item.version),['0.2.0','0.1.0']);
+  assert.equal((await service.check(true,'0.1.0')).selected.version,'0.1.0');
+  await assert.rejects(service.queue('update','0.2.0',1),/先验证/);
+  assert.equal((await service.queue('update','0.1.0',1)).state,'queued');assert.equal(launches,1);
+});
+test('one-shot local queue launches once, never requires a persistent agent and blocks incompatible releases',async t=>{
+  const root=fixture(t),keys=generateKeyPairSync('ed25519',{publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});
+  const remote=(dataContract:string)=>{const manifest={schemaVersion:1,repository:'dabiao996/dbtv',version:'0.2.0',revision:'b'.repeat(40),dataContract,image:'ghcr.io/dabiao996/dbtv@sha256:'+'c'.repeat(64),source:{url:'https://github.com/dabiao996/dbtv/releases/download/v0.2.0/dbtv-source.tar.gz',sha256:'d'.repeat(64)}};
+    const bytes=Buffer.from(JSON.stringify(manifest)),signature=sign(null,bytes,keys.privateKey).toString('base64');
+    return async(url:string)=>url.endsWith('.json')?new Response(bytes):url.endsWith('.sig')?new Response(signature):Response.json({tag_name:'v0.2.0',draft:false,prerelease:false});};
+  let launched=0;
+  const service=createUpdates({root,key:keys.publicKey,fetcher:remote(contract),oneShot:true,launch:async()=>{launched++;}});
+  assert.equal(service.info().agent.enabled,true);assert.equal(service.info().agent.mode,'incremental');
+  await service.check();await assert.rejects(service.queue('rollback',randomUUID(),1),/一次性/);
+  const queued=await service.queue('update','0.2.0',1);assert.equal(queued.state,'queued');assert.equal(launched,1);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'data/updates/status.json'),'utf8')).job.state,'queued');
+  const blocked=createUpdates({root:fixture(t),key:keys.publicKey,fetcher:remote('e'.repeat(64)),oneShot:true,launch:async()=>{launched++;}});
+  await blocked.check();await assert.rejects(blocked.queue('update','0.2.0',1),/兼容标识/);assert.equal(launched,1);
+});
+test('one-shot queue spawns a separate fixed worker with a narrowed environment',async t=>{
+  const root=fixture(t),keys=generateKeyPairSync('ed25519',{publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});
+  const manifest={schemaVersion:1,repository:'dabiao996/dbtv',version:'0.2.0',revision:'b'.repeat(40),dataContract:contract,image:'ghcr.io/dabiao996/dbtv@sha256:'+'c'.repeat(64),source:{url:'https://github.com/dabiao996/dbtv/releases/download/v0.2.0/dbtv-source.tar.gz',sha256:'d'.repeat(64)}};
+  const bytes=Buffer.from(JSON.stringify(manifest)),signature=sign(null,bytes,keys.privateKey).toString('base64');
+  const fetcher:any=async(url:string)=>url.endsWith('.json')?new Response(bytes):url.endsWith('.sig')?new Response(signature):Response.json({tag_name:'v0.2.0',draft:false,prerelease:false});
+  const script=path.join(root,'scripts/tv/incremental-worker.mjs');fs.mkdirSync(path.dirname(script),{recursive:true});
+  fs.writeFileSync(script,'import fs from "node:fs"; import path from "node:path"; fs.writeFileSync(path.join(process.argv[2],"child-ran"),JSON.stringify({port:process.env.PORT,mode:process.env.DBTV_DEV_WATCH,secret:process.env.DBTV_TEST_SECRET||null}));');
+  process.env.DBTV_TEST_SECRET='synthetic-secret';t.after(()=>{delete process.env.DBTV_TEST_SECRET;});
+  const service=createUpdates({root,key:keys.publicKey,fetcher,oneShot:true});await service.check();await service.queue('update','0.2.0',1);
+  const marker=path.join(root,'child-ran');
+  for(let i=0;i<30&&!fs.existsSync(marker);i++)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(fs.existsSync(marker),true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(marker,'utf8')),{port:'8787',mode:'1',secret:null});
 });
 test('update API enforces admin, same origin, password reauthentication and parameter whitelist',async t=>{
   const previousNodeEnv=process.env.NODE_ENV;process.env.NODE_ENV='development';

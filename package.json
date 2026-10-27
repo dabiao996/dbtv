@@ -6,7 +6,7 @@
     "tv": "node scripts/tv.mjs",
     "test:deploy": "node --test scripts/tv/*.test.mjs",
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:server": "tsx watch server/src/index.ts",
+    "dev:server": "DBTV_DEV_WATCH=1 tsx watch server/src/index.ts",
     "dev:client": "vite --config client/vite.config.ts",
     "build": "node scripts/release-build.mjs stamp && npm run db:generate && tsc -p server/tsconfig.json && vite build --config client/vite.config.ts",
     "start": "sh scripts/start.sh",

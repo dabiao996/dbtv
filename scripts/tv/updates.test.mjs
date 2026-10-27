@@ -6,7 +6,7 @@ import path from 'node:path';
 import {generateKeyPairSync,sign,randomUUID} from 'node:crypto';
 import releases from '../releases.cjs';
 import {transition,validateRequest,enable,processUpdate,consume,publicStatus,history} from './updates.mjs';
-import {compose,backupLiveCatalog,restoreLiveCatalog} from './core.mjs';
+import {compose} from './core.mjs';
 import {createDriver} from './update-driver.mjs';
 import http from 'node:http';
 const contract='a'.repeat(64),keys=generateKeyPairSync('ed25519',{publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});
@@ -54,43 +54,45 @@ test('actual HTTP checks verify running version and data contract, not just proc
   assert.equal(await driver.ready(selected),true);value={...value,version:'9.9.9'};assert.equal(await driver.ready(selected),false);await assert.rejects(driver.healthy(selected),/目标版本/);
   value={...value,version:'0.1.0',dataContract:'e'.repeat(64)};assert.equal(await driver.ready(selected),false);
 });
-test('successful update stops before snapshot, records before switch, checks health before completion',async()=>{
+test('successful legacy code switch does not create an automatic backup and checks health before completion',async()=>{
   const {ops,events,reports}=operations();const next={...state,release:{...state.release,version:'0.2.0'}};
   const value=await transition({before:state,next,job:{id:randomUUID()},ops});assert.equal(value.state,'complete');
-  assert.deepEqual(events,['stop:0.1.0','backup','record:prepared','persist:0.2.0','start:0.2.0','health:0.2.0','record:complete']);assert.equal(reports.at(-1).state,'complete');
+  assert.deepEqual(events,['stop:0.1.0','record:prepared','persist:0.2.0','start:0.2.0','health:0.2.0','record:complete']);assert.equal(value.record.backup,null);assert.equal(reports.at(-1).state,'complete');
 });
-test('backup failure never launches new code or overwrites a database',async()=>{
+test('legacy switch does not consult a backup operation',async()=>{
   const {ops,events,reports}=operations({failBackup:true});const next={...state,release:{...state.release,version:'0.2.0'}};
-  const value=await transition({before:state,next,job:{id:randomUUID()},ops});assert.equal(value.state,'rolled-back');assert.ok(!events.includes('start:0.2.0'));assert.equal(reports.at(-1).state,'rolled-back');
+  const value=await transition({before:state,next,job:{id:randomUUID()},ops});assert.equal(value.state,'complete');assert.ok(!events.includes('backup'));assert.equal(reports.at(-1).state,'complete');
 });
 test('failed new version rolls back code only when data contract is identical',async()=>{
   const {ops,events}=operations({failHealth:true});const next={...state,release:{...state.release,version:'0.2.0'}};
   const value=await transition({before:state,next,job:{id:randomUUID()},ops});assert.equal(value.state,'rolled-back');assert.equal(events.at(-1),'health:0.1.0');
-  assert.ok(events.indexOf('restore:live')>events.indexOf('stop:0.2.0'));
-  assert.ok(events.indexOf('restore:live')<events.indexOf('start:0.1.0'));
+  assert.ok(!events.includes('backup'));assert.ok(!events.includes('restore:live'));
 });
-test('failed launch restores the backed-up live JSON before restarting old code',async t=>{
-  const home=fixture(t),data=path.join(home,'data'),backup=path.join(home,'backup'),file=path.join(data,'live-tv.json');
-  fs.mkdirSync(backup,{mode:0o700});
+test('failed launch never rewrites a private live JSON or database without backup',async t=>{
+  const home=fixture(t),data=path.join(home,'data'),file=path.join(data,'live-tv.json');
   const catalog=name=>JSON.stringify({version:1,sources:[{id:'fixture',name:'Fixture',playlistUrl:'https://example.org/list.m3u',metadataUrl:null}],autoUpdate:false,lastUpdatedAt:null,channels:[{id:'a'.repeat(32),name,country:'CN',categories:['general'],cover:null,lines:[{url:'https://example.org/live.m3u8?token=private-fixture',name:'Primary',restricted:false}],enabled:true,available:true}]});
-  fs.writeFileSync(file,catalog('Original'),{mode:0o600});
+  fs.writeFileSync(file,catalog('Original'),{mode:0o600});fs.writeFileSync(path.join(data,'dabiao.db'),'database fixture',{mode:0o600});
   const {ops,events}=operations({failHealth:true});
-  ops.backup=async()=>{events.push('backup');const liveTv=backupLiveCatalog(data,backup);fs.writeFileSync(path.join(backup,'backup.json'),JSON.stringify({version:1,id:'dbtv',complete:true,liveTv}),{mode:0o600});return backup;};
-  ops.restoreLiveCatalog=async()=>{events.push('restore:live');restoreLiveCatalog(data,backup);};
   const start=ops.start;ops.start=async value=>{await start(value);if(value.release.version==='0.2.0')fs.writeFileSync(file,catalog('Changed'),{mode:0o600});};
   const next={...state,release:{...state.release,version:'0.2.0'}};
   const result=await transition({before:state,next,job:{id:randomUUID()},ops});
-  assert.equal(result.state,'rolled-back');assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).channels[0].name,'Original');
-  assert.equal(fs.readdirSync(backup).filter(name=>name.startsWith('live-tv-before-restore-')).length,1);
+  assert.equal(result.state,'rolled-back');assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).channels[0].name,'Changed');
+  assert.equal(fs.readFileSync(path.join(data,'dabiao.db'),'utf8'),'database fixture');assert.ok(!events.includes('backup'));
 });
-test('invalid live backup blocks automatic recovery without starting the old code',async()=>{
+test('automatic program recovery does not depend on a backup snapshot',async()=>{
   const {ops,events,reports}=operations({failHealth:true,failRestore:true});const next={...state,release:{...state.release,version:'0.2.0'}};
   const value=await transition({before:state,next,job:{id:randomUUID()},ops});
-  assert.equal(value.state,'blocked');assert.ok(!events.includes('start:0.1.0'));assert.equal(reports.at(-1).state,'blocked');
+  assert.equal(value.state,'rolled-back');assert.ok(events.includes('start:0.1.0'));assert.ok(!events.includes('restore:live'));assert.equal(reports.at(-1).state,'rolled-back');
 });
 test('incompatible data blocks automatic rollback instead of restoring stale user data',async()=>{
   const {ops,events,reports}=operations({failHealth:true});const next={...state,release:{...state.release,version:'0.2.0',dataContract:'e'.repeat(64)}};
   const value=await transition({before:state,next,job:{id:randomUUID()},ops});assert.equal(value.state,'blocked');assert.ok(!events.includes('start:0.1.0'));assert.ok(!events.includes('restore:live'));assert.equal(reports.at(-1).state,'blocked');
+});
+test('incompatible signed release is rejected before preparing or stopping the old site',async t=>{
+  const home=fixture(t),value=remote(),{ops,events}=operations();
+  const driver={...ops,ready:async()=>true,prepare:async()=>{throw Error('must not prepare');}};
+  await assert.rejects(processUpdate(home,{...state,release:{...state.release,dataContract:'e'.repeat(64)}},{id:randomUUID(),action:'update',target:'0.2.0',actor:1,createdAt:new Date().toISOString()},driver,{fetcher:value.fetcher}),/兼容标识不同/);
+  assert.deepEqual(events,[]);
 });
 test('worker verifies signed release, persists rollback history, and preserves port/data identity',async t=>{
   const home=fixture(t),value=remote(),{ops}=operations();
