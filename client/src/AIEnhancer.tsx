@@ -1,127 +1,118 @@
-import {useEffect, useRef, useState, type RefObject} from 'react';
-import {captureCenterCrop, downloadVerifiedModel, inferCrop, X4PLUS_CROP_EDGE, X4PLUS_MODEL_BYTES} from './realesrgan-x4plus';
+import {useEffect, useRef, useState} from 'react';
+import {AIEnhancementSession, type EnhancementLevel, type EnhancementStatus} from './ai-enhancement';
 import './ai-enhancer.css';
 
-type Preview = {source: string; crop: string; output: string; inferenceMs: number; theoreticalFps: number};
-
-export default function AIEnhancer({videoRef}: {videoRef: RefObject<HTMLVideoElement | null>}) {
-  const originalRef = useRef<HTMLCanvasElement>(null);
-  const resultRef = useRef<HTMLCanvasElement>(null);
-  const controllerRef = useRef<AbortController | null>(null);
-  const generationRef = useRef(0);
-  const activeRef = useRef(false);
-  const previewRef = useRef(false);
-  const [busy, setBusy] = useState(false);
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const [status, setStatus] = useState('默认原画；x4plus 仅对暂停帧中央区域做单帧预览');
-  const compatible = window.isSecureContext && 'gpu' in navigator;
-
-  function clear(message: string) {
-    generationRef.current++;
-    controllerRef.current?.abort();
-    controllerRef.current = null;
-    previewRef.current = false;
-    setPreview(null);
-    setStatus(activeRef.current ? `${message}；正在等待当前推理结束` : message);
-  }
+export default function AIEnhancer({videoRef}: {videoRef: React.RefObject<HTMLVideoElement | null>}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sessionRef = useRef<AIEnhancementSession | null>(null);
+  const [preset, setPreset] = useState<'original' | 'anime'>('original');
+  const [level, setLevel] = useState<EnhancementLevel>('standard');
+  const [compare, setCompare] = useState(false);
+  const [status, setStatus] = useState<EnhancementStatus>({active: false, message: '默认关闭；由此设备 GPU 本地处理'});
+  const compatible = window.isSecureContext && 'gpu' in navigator && !!HTMLVideoElement.prototype.requestVideoFrameCallback;
+  const enabled = preset !== 'original';
 
   useEffect(() => {
+    if (preset === 'original') return;
     const video = videoRef.current;
-    if (!video) return;
-    const onPlay = () => clear('视频已继续播放；单帧预览关闭，播放原画');
-    const onSeek = () => {
-      if (activeRef.current || previewRef.current) clear('视频定位后预览已失效；播放原画');
-    };
-    const onPiP = () => clear('画中画只播放原画');
-    const onCast = () => clear('投屏只播放原画');
-    const onNativeFullscreen = () => clear('原生全屏只播放原画');
-    video.addEventListener('play', onPlay);
-    video.addEventListener('seeking', onSeek);
-    video.addEventListener('resize', onSeek);
-    video.addEventListener('enterpictureinpicture', onPiP);
-    video.addEventListener('webkitbeginfullscreen', onNativeFullscreen);
-    video.remote?.addEventListener('connect', onCast);
-    return () => {
-      generationRef.current++;
-      controllerRef.current?.abort();
-      video.removeEventListener('play', onPlay);
-      video.removeEventListener('seeking', onSeek);
-      video.removeEventListener('resize', onSeek);
-      video.removeEventListener('enterpictureinpicture', onPiP);
-      video.removeEventListener('webkitbeginfullscreen', onNativeFullscreen);
-      video.remote?.removeEventListener('connect', onCast);
-    };
-  }, [videoRef]);
-
-  async function makePreview() {
-    if (activeRef.current) return;
-    const video = videoRef.current;
-    if (!video) return;
-    if (!compatible) {setStatus('此浏览器缺少安全上下文或 WebGPU，继续播放原画'); return;}
-    let crop;
-    try {crop = captureCenterCrop(video);}
-    catch (error) {setStatus(error instanceof Error ? error.message : '无法读取视频帧，继续播放原画'); return;}
-    clear('准备加载模型…');
-    const generation = generationRef.current;
-    const controller = new AbortController();
-    controllerRef.current = controller;
-    activeRef.current = true;
-    setBusy(true);
-    setStatus(`正在从本机加载并校验 x4plus 模型（${Math.round(X4PLUS_MODEL_BYTES / 1048576)} MiB）… 0%`);
-    try {
-      let lastPercent = -1;
-      const model = await downloadVerifiedModel(controller.signal, percent => {
-        if (generation === generationRef.current && percent !== lastPercent) {
-          lastPercent = percent;
-          setStatus(`正在从本机加载并校验 x4plus 模型（${Math.round(X4PLUS_MODEL_BYTES / 1048576)} MiB）… ${percent}%`);
-        }
-      });
-      if (controller.signal.aborted || generation !== generationRef.current) return;
-      setStatus(`模型校验通过；正在用 WebGPU 推理 ${crop.size}×${crop.size} 原生画面区域…`);
-      const result = await inferCrop(crop, model, controller.signal, () => {
-        if (generation === generationRef.current) clear('GPU 设备丢失，已恢复原画');
-      });
-      if (controller.signal.aborted || generation !== generationRef.current) return;
-      const original = originalRef.current;
-      const enhanced = resultRef.current;
-      if (!original || !enhanced) throw new Error('无法显示模型结果');
-      original.width = original.height = crop.size;
-      enhanced.width = enhanced.height = crop.size * 4;
-      original.getContext('2d')?.putImageData(crop.pixels, 0, 0);
-      enhanced.getContext('2d')?.putImageData(result.image, 0, 0);
-      const theoreticalFps = 1000 / result.inferenceMs;
-      previewRef.current = true;
-      setPreview({source: `${video.videoWidth}×${video.videoHeight}`, crop: `${crop.size}×${crop.size} @ (${crop.x},${crop.y})`, output: `${crop.size * 4}×${crop.size * 4}`, inferenceMs: result.inferenceMs, theoreticalFps});
-      setStatus('x4plus 已完成一帧；下方 A/B 为同一区域、同样显示尺寸。视频仍播放原画。');
-    } catch (error) {
-      if (!controller.signal.aborted && generation === generationRef.current) {
-        setPreview(null);
-        setStatus(error instanceof Error ? `${error.message}；继续播放原画` : 'x4plus 运行失败，继续播放原画');
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    const aborter = new AbortController();
+    let ready = false;
+    const session = new AIEnhancementSession(video, canvas, result => {
+      if (aborter.signal.aborted) return;
+      if (result.active) {ready = true; window.clearTimeout(timeout);}
+      setStatus(result);
+      if (!result.active && result.message !== '定位中，暂时显示原画') setPreset('original');
+    });
+    sessionRef.current = session;
+    let started = false;
+    const timeout = window.setTimeout(() => {
+      if (!ready && !aborter.signal.aborted) {
+        aborter.abort();
+        session.stop();
+        setStatus({active: false, message: started ? '模型初始化超时，已恢复原画；可切轻量档重试' : '视频帧长时间未就绪，已恢复原画；可在画面出现后重试'});
+        setPreset('original');
       }
-    } finally {
-      activeRef.current = false;
-      if (generation === generationRef.current) controllerRef.current = null;
-      setBusy(false);
-      if (generation !== generationRef.current) setStatus(current => current.replace('；正在等待当前推理结束', ''));
+    }, 20000);
+    const start = () => {
+      if (started || aborter.signal.aborted || video.readyState < 2) return;
+      started = true;
+      setStatus({active: false, message: '正在加载动画模型和 WebGPU…'});
+      void session.start(level, aborter.signal).catch(error => {
+        if (aborter.signal.aborted) return;
+        session.stop();
+        setStatus({active: false, message: error instanceof Error ? error.message : 'AI 增强初始化失败，已恢复原画'});
+        setPreset('original');
+      });
+    };
+    const onMediaError = () => {
+      if (aborter.signal.aborted || started) return;
+      setStatus({active: false, message: '视频源无法解码，已恢复原画'});
+      setPreset('original');
+    };
+    video.addEventListener('loadeddata', start);
+    video.addEventListener('canplay', start);
+    video.addEventListener('seeked', start);
+    video.addEventListener('error', onMediaError);
+    start();
+    return () => {
+      aborter.abort();
+      window.clearTimeout(timeout);
+      video.removeEventListener('loadeddata', start);
+      video.removeEventListener('canplay', start);
+      video.removeEventListener('seeked', start);
+      video.removeEventListener('error', onMediaError);
+      session.stop();
+      if (sessionRef.current === session) sessionRef.current = null;
+    };
+  }, [preset, level, videoRef]);
+
+  function changePreset(next: 'original' | 'anime') {
+    if (preset === next) return;
+    sessionRef.current?.stop();
+    setCompare(false);
+    setStatus({active: false, message: next === 'original' ? '已关闭，播放原画' : '正在检查设备和视频源…'});
+    setPreset(next);
+  }
+
+  function changeLevel(next: EnhancementLevel) {
+    if (level === next) return;
+    sessionRef.current?.stop();
+    setCompare(false);
+    setLevel(next);
+    setStatus({active: false, message: '正在切换模型…'});
+  }
+
+  async function toggleContainerFullscreen() {
+    const shell = canvasRef.current?.parentElement;
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if (shell?.requestFullscreen) await shell.requestFullscreen();
+      else setStatus({active: status.active, message: '此浏览器不能让播放器容器全屏；原生全屏会显示原画'});
+    } catch {
+      setStatus({active: status.active, message: '播放器容器全屏失败；原生全屏会显示原画'});
     }
   }
 
+  const visible = enabled && status.active && !compare;
   return <>
+    <canvas ref={canvasRef} className={`ai-enhanced-canvas ${visible ? 'is-visible' : ''}`} aria-hidden="true"/>
     <div className="ai-enhancer-ui">
       <div className="ai-enhancer-buttons">
         <span className="ai-mode-title">AI画质增强（实验）</span>
-        <button type="button" onClick={() => void makePreview()} disabled={busy || !compatible}>x4plus 单帧预览</button>
-        {(busy || preview) && <button type="button" onClick={() => clear('已关闭预览，播放原画')}>关闭并看原画</button>}
+        <select aria-label="画质处理模式" value={preset} onChange={event => changePreset(event.target.value as 'original' | 'anime')} disabled={!compatible}>
+          <option value="original">原画 · 默认关闭</option>
+          <option value="anime">动画 · Anime4K CNN</option>
+        </select>
+        {enabled && <select aria-label="增强档位" value={level} onChange={event => changeLevel(event.target.value as EnhancementLevel)}>
+          <option value="light">轻量 S</option><option value="standard">标准 M</option><option value="detail">高负载 L</option>
+        </select>}
+        {enabled && <button type="button" onClick={() => void toggleContainerFullscreen()}>播放器全屏</button>}
+        {status.active && <button type="button" className="ai-compare" onPointerDown={() => setCompare(true)} onPointerUp={() => setCompare(false)} onPointerCancel={() => setCompare(false)} onPointerLeave={() => setCompare(false)} onKeyDown={event => {if (event.key === ' ' || event.key === 'Enter') setCompare(true);}} onKeyUp={() => setCompare(false)}>按住看原画 A/B</button>}
       </div>
-      <output role="status">{compatible ? status : '此浏览器缺少安全上下文或 WebGPU，播放原画'}</output>
-      <small className="ai-enhancer-note">只处理暂停帧中央最多 {X4PLUS_CROP_EDGE}×{X4PLUS_CROP_EDGE} 原生像素；不是整段视频增强，不上传画面。</small>
+      <output role="status">{compatible ? status.message : '此浏览器缺少安全上下文、WebGPU 或视频帧回调，播放原画'}{status.sourceSize && status.outputSize && ` · 输入 ${status.sourceSize} → 模型输出 ${status.outputSize}`}{status.displaySize && ` → 播放窗口 ${status.displaySize}`}{status.displayUpscaled && ' · 播放窗口大于模型输出，浏览器仍会放大画面'}{status.frameMs !== undefined && ` · 平均帧耗时 ${status.frameMs}ms`}{status.droppedFrames !== undefined && ` · 启用后浏览器掉帧 ${status.droppedFrames}`}{compare && ' · A/B 正在显示原画'}</output>
+      {enabled && <small className="ai-enhancer-note">动画使用 Anime4K 原始 CNN 权重；线条可能更明显，也可能出现光晕。若发热或卡顿，请切轻量档或原画。</small>}
     </div>
-    <section className="ai-preview-panel" aria-label="x4plus 单帧 A/B 对比" hidden={!preview}>
-      <div className="ai-preview-images">
-        <figure><figcaption>原画 A</figcaption><canvas ref={originalRef} aria-label="原画中央区域"/></figure>
-        <figure><figcaption>x4plus B</figcaption><canvas ref={resultRef} aria-label="模型处理后的相同区域"/></figure>
-      </div>
-      {preview && <p>源 {preview.source} · 原生裁切 {preview.crop} → 模型输出 {preview.output}。单帧推理 {Math.round(preview.inferenceMs)} ms；理论上限 {preview.theoreticalFps.toFixed(1)} 帧/秒，未验证连续实时。掉帧：不适用（暂停单帧）。</p>}
-    </section>
   </>;
 }

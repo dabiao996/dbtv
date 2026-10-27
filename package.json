@@ -11,7 +11,7 @@
     "build": "node scripts/release-build.mjs stamp && npm run db:generate && tsc -p server/tsconfig.json && vite build --config client/vite.config.ts",
     "start": "sh scripts/start.sh",
     "setup": "node scripts/setup-database.mjs",
-    "test": "node --import tsx --test server/tests/*.test.ts",
+    "test": "node --import tsx --test server/tests/*.test.ts client/tests/*.test.ts",
     "test:database": "npm run build && node --test server/tests/*integration.mjs",
     "db:generate": "node scripts/database.mjs generate",
     "db:validate": "node scripts/database.mjs validate",
@@ -22,10 +22,10 @@
   },
   "dependencies": {
     "@prisma/client": "6.13.0",
+    "@websr/websr": "0.0.16",
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "hls.js": "^1.6.13",
-    "onnxruntime-web": "1.22.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.8.2"
