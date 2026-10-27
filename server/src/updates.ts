@@ -2,6 +2,7 @@ import type {Express} from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {trustedBrowserOrigin} from './origin.js';
 const releases=require('../../scripts/releases.cjs');
 const database=require('../../scripts/web-database.cjs');
 
@@ -60,8 +61,7 @@ export function registerUpdates(app:Express,deps:{requireAdmin:(req:any,res:any)
     res.setHeader('Cache-Control','private, no-store');
     // Explicit same-origin requirement for mutations, independent of a router's outer CSRF gate.
     if(req.method!=='GET'){
-      let accepted=false;try{const origin=new URL(String(req.headers.origin||''));accepted=origin.host===req.get('host')||origin.origin===process.env.APP_ORIGIN;}catch{}
-      if(!accepted)return res.status(403).json({error:'更新操作必须从受信任的网站后台发起'});
+      if(!trustedBrowserOrigin(req.headers.origin,req.get('host')))return res.status(403).json({error:'更新操作必须从受信任的网站后台发起'});
     }
     try{await work(req,res,user);}catch(error:any){res.status(400).json({error:error.message});}
   };

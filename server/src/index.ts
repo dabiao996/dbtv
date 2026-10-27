@@ -12,6 +12,7 @@ import {readPagination,createMergedPagination,remoteHasMore} from './pagination.
 import {registerResourceCenter} from './resource-center.js';
 import {createInstallation} from './installation.js';
 import {registerUpdates} from './updates.js';
+import {trustedBrowserOrigin} from './origin.js';
 import {registerLive} from './live.js';
 const releaseInfo=require('../../scripts/releases.cjs').current();
 const databaseTools=require('../../scripts/database-config.cjs');
@@ -31,8 +32,7 @@ const loginAttempts=new Map<string,{at:number;count:number}>();
 app.use('/api',async(req:any,res:any,next:any)=>{
   let route:string;try{route=decodeURIComponent(req.originalUrl.split('?')[0]).toLowerCase()}catch{return res.status(400).json({error:'无效路径'})}
   if(req.headers.origin){
-    let accepted=false;try{const origin=new URL(req.headers.origin);accepted=origin.host===req.get('host')||origin.origin===process.env.APP_ORIGIN||process.env.NODE_ENV!=='production'&&/^https?:\/\/(localhost|127\.0\.0\.1):5173$/.test(origin.origin)}catch{}
-    if(!accepted)return res.status(403).json({error:'请求来源不受信任'});
+    if(!trustedBrowserOrigin(req.headers.origin,req.get('host')))return res.status(403).json({error:'请求来源不受信任'});
   }
   await installation.ready;
   const bootstrapRoute=['/api/health','/api/install','/api/install/status','/api/install/database/test','/api/auth/me'].includes(route)||route==='/api/settings'&&req.method==='GET';
