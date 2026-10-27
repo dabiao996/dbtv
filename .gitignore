@@ -1,4 +1,5 @@
 node_modules/
+client/public/models/realesrgan/*.onnx
 release-artifacts/
 *.key
 *.pem
