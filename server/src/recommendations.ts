@@ -96,4 +96,5 @@ export function registerRecommendations(app:Express,db:any,auth:{requireUser:any
   app.get('/api/recommendations/preferences',async(req,res)=>{const user=await access(req,res);if(user)res.json({preferences:await service.getPreferences(user.id),genres:tasteGenres.map(({key,name})=>({key,name}))})});
   app.put('/api/recommendations/preferences',async(req,res)=>{const user=await access(req,res);if(!user)return;try{res.json({preferences:await service.putPreferences(user.id,req.body||{})})}catch(e:any){res.status(400).json({error:e.message||'偏好无效'})}});
   app.post('/api/recommendations/dismiss',async(req,res)=>{const user=await access(req,res);if(!user)return;try{await service.dismiss(user.id,String(req.body?.type||''),Number(req.body?.id));res.json({ok:true})}catch{res.status(400).json({error:'影片标识无效'})}});
+  return service;
 }

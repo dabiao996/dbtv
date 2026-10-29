@@ -18,6 +18,7 @@ export function permissionForApi(path:string,method='GET'):string|null{
   if(/^\/api\/sources\/[^/]+\/videos\/[^/]+\/?$/.test(path)||/^\/api\/(playback-options|play|playback-errors)(\/|$)/.test(path))return 'playback';
   if(/^\/api\/(sources|library)(\/|$)/.test(path))return 'sources';
   if(/^\/api\/search(\/|$)/.test(path))return 'search';
+  if(/^\/api\/ai\/chat(\/|$)/.test(path))return 'search';
   if(/^\/api\/(catalog|discover)(\/|$)/.test(path))return 'discover';
   if(/^\/api\/recommendations(\/|$)/.test(path))return 'recommendations';
   if(/^\/api\/favorites(\/|$)/.test(path))return 'favorites';

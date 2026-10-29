@@ -67,4 +67,5 @@ export function registerSearch(app:Express,db:PrismaClient,deps:Dependencies){
     for(const item of verified)if(item)variants.set(JSON.stringify([item.sourceKey,item.id]),item);
     res.json({items:[...variants.values()].map(x=>({id:x.id,sourceKey:x.sourceKey,sourceName:x.sourceName,title:x.title,year:x.year,cover:x.cover})),currentSourceName:source.name});
   });
+  return {searchRows};
 }
