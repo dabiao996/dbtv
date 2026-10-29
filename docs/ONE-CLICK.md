@@ -51,13 +51,27 @@ sudo systemd-analyze verify /etc/systemd/system/dabiao-tv-managed.service
 
 校验不启动服务、不修改数据库；真正启动服务则会执行应用正常初始化/数据库准备流程。完整服务启动与 HTTP/数据库健康检查仍须在目标 Ubuntu 环境核实。
 
+## 独立服务账号（原生新装）
+
+`native` 默认创建专用账号及同名组 `dabiaotv`。如果服务器已存在该名字（例如另一个服务使用它），**不要删除或修改已有账号**；为本次新装显式指定一个尚不存在的独立名字：
+
+```sh
+sudo bash scripts/install.sh --mode native --home /opt/dbtv-app --service-user dbtv-app --port 8788 --yes
+```
+
+账号名必须匹配 `^[a-z_][a-z0-9_-]{0,30}$`，禁止 `root`；`--service-user` 仅用于 native，Docker 和 Termux 不接受。尚无 `deployment.json` 的原生新装会在 apt 或私有 Node 安装前查询 `getent passwd NAME` 和 `getent group NAME`。任一条目已存在就停止；只有两次查询都返回“未找到”（退出码 2）才继续。缺少 getent 或其他查询异常一律停止，不把查询失败当作空闲名字。
+
+选择新账号不会修改原 `dabiaotv`，也不会停止或操作与原账号共享 UID 的进程。该检查只针对当前系统/NSS 快照；安装管理器还会再次核验，不能据此保证未来的 Kubernetes `runAsUser`、容器 UID 映射或其他软件配置不会冲突。管理员仍需协调后续 UID/GID 使用。
+
+已有 `deployment.json` 时不套用“名字必须不存在”的新装预检，管理器读取并展示原部署状态，不因传入新名字而重命名或接管服务账号。失败新装若已留下账号但没有部署记录，也不会自动复用；保留现场并人工核对，不要靠删账号、改 UID 或杀进程绕过保护。
+
 ## 专用服务账号的 HOME
 
-原生安装将 `dabiaotv` 的账户 HOME 设置为专用管理目录（默认 `/opt/dabiao-tv`）。systemd 以该账号启动时，`os.homedir()` 因而也等于管理目录；这不是用户把源码目录选错。旧管理器把“禁止采用整个用户目录”的安装保护无条件应用到 `serve`，会导致服务反复退出并报告“请使用专用管理目录”。
+原生安装将所选专用账号（默认 `dabiaotv`）的账户 HOME 设置为专用管理目录（默认 `/opt/dabiao-tv`）。systemd 以该账号启动时，`os.homedir()` 因而也等于管理目录；这不是用户把源码目录选错。旧管理器把“禁止采用整个用户目录”的安装保护无条件应用到 `serve`，会导致服务反复退出并报告“请使用专用管理目录”。
 
 保护规则仍禁止安装、更新等管理操作采用整个用户目录，也始终禁止系统根目录和源码根目录。仅对非 root 的 `serve`，在已有私有部署配置、native 模式、管理源码标记、固定私有 Node 路径、管理目录内源码/发行目录和匹配的服务入口均核实后，允许专用服务账号 HOME 与管理目录相同。新装本身不会因此放宽。
 
-只读诊断可用 `getent passwd dabiaotv` 核对 HOME，并运行 `sudo runuser -u dabiaotv -- /opt/dabiao-tv/tools/node/bin/node -p 'require("node:os").homedir()'`；不需要更改账号 HOME、删除部署配置或伪造环境变量绕过检查。
+以下示例使用默认账号；自定义时替换为已记录的服务账号。只读诊断可用 `getent passwd dabiaotv` 核对 HOME，并运行 `sudo runuser -u dabiaotv -- /opt/dabiao-tv/tools/node/bin/node -p 'require("node:os").homedir()'`；不需要更改账号 HOME、删除部署配置或伪造环境变量绕过检查。
 
 已有服务恢复时应核对实际 ExecStart 指向的管理器，将修复版本的 `scripts/tv.mjs` 和 `scripts/tv/core.mjs` 一并更新到运行副本，再重启服务并检查管理状态和 HTTP/数据库健康。不要仅改源码仓库却遗漏 `/opt/dabiao-tv/app` 的运行副本；如果 WorkingDirectory 尚未修复，还须按上一节核验生成的 unit。上述恢复不重装、不删除数据库，也不自动覆盖自定义配置。
 
@@ -178,3 +192,5 @@ bash -n scripts/install.sh
 原生安装、发行源码包和 Docker 运行镜像都应包含仓库自带的 `tvbox.json`。这只是提供配置文件，不会自动导入或覆盖已有数据库。安装失败后的旧托管 `app` 目录仍不会被重跑安装器覆盖；补源码文件和导入数据库是两个不同操作。
 
 可选的联网生产安装回归：`npm run test:production-install`。请使用非 root 的 Node 完整发行版（带 npm）执行；测试在新建临时目录复制公开源码，以生产环境和 `npm omit=dev` 安装构建，再以实际 `serve → npm start` 链启动，完成临时站点首次安装和 JSON 合并导入，最后清理该临时目录。它不调用系统安装器、不创建系统账号或 systemd unit，也不接触已有数据库。真正的 Ubuntu systemd 安装及 Docker 镜像运行仍需对应隔离环境验证。
+
+新建 native 账号会在 60000–64999 中选择同时未被 NSS 数值查询、当前宿主线程凭据/补充组、subuid/subgid 及其他用户命名空间映射占用的 UID/GID，并在创建前后复核。无可验证候选或读取失败即停止，不强制复用。所选账号与数字身份持久化至部署配置；启动/管理发现 UID/GID 漂移会拒绝继续授权。请在 VM 宿主执行；身份映射检查不能识别所有未映射容器，也不能证明未来 Kubernetes 不会选择同样数字，需要为宿主服务保留该身份范围。账号创建中途失败可能留下本次新建的空组，脚本不会自动删除或接管它。

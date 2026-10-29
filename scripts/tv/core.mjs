@@ -225,6 +225,11 @@ export function restoreLiveCatalog(dataDirectory,backupDirectory){
     return {restored:true};
   }finally{fs.closeSync(data.fd);if(backup)fs.closeSync(backup.fd);}
 }
+export function nativeServiceUser(state={}) {
+  const user=state.serviceUser===undefined?'dabiaotv':state.serviceUser;
+  if(typeof user!=='string'||!/^[a-z_][a-z0-9_-]{0,30}$/.test(user)||user==='root')throw Error('服务账号名称无效');
+  return user;
+}
 export function save(home,state) {atomic(path.join(home,'deployment.json'),`${JSON.stringify(state,null,2)}\n`);}
 export function read(home) {
   const file=path.join(home,'deployment.json');
@@ -232,7 +237,7 @@ export function read(home) {
   if(fs.lstatSync(file).isSymbolicLink()||(fs.statSync(file).mode&0o077)) throw Error('管理配置权限不安全，请设为600');
   const state=JSON.parse(fs.readFileSync(file,'utf8'));
   if(state.version!==1||state.id!=='dbtv'||!['native','docker','termux'].includes(state.mode)||!path.isAbsolute(state.source)||!path.isAbsolute(state.node)||!['127.0.0.1','0.0.0.0'].includes(state.bind)) throw Error('管理配置无效');
-  portNumber(state.port);origin(state.origin);
+  portNumber(state.port);origin(state.origin);if(state.mode==='native')nativeServiceUser(state);
   return state;
 }
 // Installation must never adopt a whole user home. The dedicated native service
@@ -289,7 +294,8 @@ export function compose(home,state) {
   // JSON is a YAML 1.2 subset; no shell/YAML interpolation of user input.
   return JSON.stringify({services:{'dabiao-tv':{...state.image?{image:state.image}:{build:{context:state.source}},restart:'unless-stopped',env_file:[path.join(home,'app.env')],environment:{HOST:'0.0.0.0',PORT:'8787',DBTV_DATA_DIR:'/app/data'},ports:[`${state.bind}:${state.port}:8787`],volumes:[`${path.join(home,'data')}:/app/data`],logging:{driver:'local',options:{'max-size':'5m','max-file':'2'}}}}},null,2);
 }
-export function systemdUnit(home,state,user='dabiaotv') {
+export function systemdUnit(home,state,user=nativeServiceUser(state)) {
+  nativeServiceUser({serviceUser:user});
   for(const value of [home,state.source,state.node]){
     if(typeof value!=='string'||!path.isAbsolute(value)||/[\x00-\x1f\x7f]/.test(value))throw Error('systemd 路径必须为不含控制字符的绝对路径');
   }

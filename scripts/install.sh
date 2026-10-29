@@ -9,18 +9,23 @@ if "$termux"; then install_home="${DBTV_HOME:-$HOME/.local/share/dabiao-tv}"; in
 else install_home="${DBTV_HOME:-/opt/dabiao-tv}"; install_mode=native; fi
 auto_yes=false
 port_supplied=false
+service_user=dabiaotv
+service_user_supplied=false
 manager_args=()
 while (($#)); do
   case "$1" in
     --home) install_home="${2:?--home 缺少目录}"; shift 2 ;;
     --mode) install_mode="${2:?--mode 缺少方式}"; shift 2 ;;
+    --service-user)
+      [[ $# -ge 2 ]] || { printf '%s\n' '--service-user 缺少账号名' >&2; exit 1; }
+      service_user="$2"; service_user_supplied=true; shift 2 ;;
     --yes) auto_yes=true; manager_args+=(--yes); shift ;;
     --port)
       port_value="${2:?端口缺少值}"
       [[ "$port_value" =~ ^[0-9]{1,5}$ ]] && ((10#$port_value >= 1024 && 10#$port_value <= 65535)) || { printf '%s\n' '端口必须是1024–65535的整数' >&2; exit 1; }
       port_supplied=true; manager_args+=(--port "$port_value"); shift 2 ;;
     --bind|--origin) manager_args+=("$1" "${2:?参数缺少值}"); shift 2 ;;
-    --help) printf '%s\n' '用法：bash scripts/install.sh [--mode native|docker|termux] [--home 专用目录] [--port 8787] [--bind 127.0.0.1|0.0.0.0] [--origin https://域名] [--yes]' '默认回车端口8787；--yes 非交互安装必须显式指定 --port。不会自动开放防火墙、修改反代或 DNS。'; exit 0 ;;
+    --help) printf '%s\n' '用法：bash scripts/install.sh [--mode native|docker|termux] [--home 专用目录] [--port 8787] [--bind 127.0.0.1|0.0.0.0] [--origin https://域名] [--service-user dabiaotv] [--yes]' '默认回车端口8787；--yes 非交互安装必须显式指定 --port。不会自动开放防火墙、修改反代或 DNS。' '--service-user 仅用于 native，默认 dabiaotv；新装要求账号和同名组均不存在，不复用或修改已有账号。'; exit 0 ;;
     *) printf '未知参数：%s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -36,6 +41,25 @@ case "$install_home" in
 esac
 [[ ! -L "$install_home" ]] || { printf '%s\n' '安装目录不能是符号链接' >&2; exit 1; }
 case "$install_mode" in native|docker|termux) ;; *) printf '%s\n' '安装方式仅支持native/docker/termux' >&2; exit 1;; esac
+[[ "$service_user" =~ ^[a-z_][a-z0-9_-]{0,30}$ && "$service_user" != root ]] || { printf '%s\n' '服务账号必须匹配 ^[a-z_][a-z0-9_-]{0,30}$，且不能是 root' >&2; exit 1; }
+if "$service_user_supplied" && [[ "$install_mode" != native ]]; then printf '%s\n' '--service-user 仅支持 native 模式，Docker/Termux 不接受此参数' >&2; exit 1; fi
+if [[ "$install_mode" == native ]]; then manager_args+=(--service-user "$service_user"); fi
+
+check_unused_service_identity() {
+  # A new install must not adopt an existing NSS user/group. Only getent's
+  # documented "key not found" status (2) proves absence; errors fail closed.
+  local database status
+  command -v getent >/dev/null 2>&1 || { printf '%s\n' '无法查询服务账号：缺少 getent，未安装依赖或更改账号。' >&2; return 1; }
+  for database in passwd group; do
+    status=0
+    getent "$database" "$service_user" >/dev/null || status=$?
+    case "$status" in
+      0) printf '拒绝复用已有%s条目：%s。请改用不存在的独立服务账号；不会删除、修改账号或终止其进程。\n' "$database" "$service_user" >&2; return 1 ;;
+      2) ;; # Missing key, not a lookup failure.
+      *) printf 'getent %s %s 查询异常（退出码 %s），无法确认账号安全；未安装依赖或更改账号。\n' "$database" "$service_user" "$status" >&2; return 1 ;;
+    esac
+  done
+}
 
 install_runtime() {
   # Pinned official Node archive + SHA256; do not overwrite the system's Node.
@@ -81,6 +105,9 @@ else
   [[ "$install_mode" != termux ]] || { printf '%s\n' 'termux模式只能在Termux运行' >&2; exit 1; }
   [[ "$(uname -s)" == Linux && "$(id -u)" == 0 ]] || { printf '%s\n' 'Linux自动安装需要root权限；请使用sudo。不会在macOS开发机执行安装。' >&2; exit 1; }
   [[ -f /etc/debian_version ]] || { printf '%s\n' '首版自动补环境支持Debian/Ubuntu；其他Linux请按手动部署说明操作。' >&2; exit 1; }
+  if [[ "$install_mode" == native && ! -e "$install_home/deployment.json" && ! -L "$install_home/deployment.json" ]]; then
+    check_unused_service_identity
+  fi
   apt-get update
   apt-get install -y --no-install-recommends ca-certificates curl git xz-utils openssl libstdc++6
   install_runtime

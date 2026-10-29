@@ -6,17 +6,18 @@ import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline/promises';
 import {randomUUID,createHash} from 'node:crypto';
-import {APP,DEFAULT_PORT,portNumber,origin,available,choosePort,question,privateDirectory,atomic,secureCopy,backupLiveCatalog,read,save,environment,writeEnvironment,addresses,health,redact,compose,systemdUnit,validateManagementHome} from './tv/core.mjs';
+import {APP,DEFAULT_PORT,portNumber,origin,available,choosePort,question,privateDirectory,atomic,secureCopy,backupLiveCatalog,read,save,environment,writeEnvironment,addresses,health,redact,compose,systemdUnit,validateManagementHome,nativeServiceUser} from './tv/core.mjs';
 import releases from './releases.cjs';
 import * as updates from './tv/updates.mjs';
 import {createDriver} from './tv/update-driver.mjs';
 import {buildDependencyArgs} from './tv/build.mjs';
+import {planNativeAccount,createNativeAccount,verifyNativeAccount} from './tv/native-account.mjs';
 
 const entry=fileURLToPath(import.meta.url);
 const say=message=>process.stderr.write(`${message}\n`);
 const shellQuote=value=>`'${String(value).replaceAll("'","'\\''")}'`;
 function options(args) {
-  const opts={};const values=new Set(['home','source','mode','node','port','bind','origin','version','record']);
+  const opts={};const values=new Set(['home','source','mode','node','port','bind','origin','version','record','service-user']);
   const flags=new Set(['json','yes','dry-run']);
   for(let i=0;i<args.length;i++) {
     const key=args[i].replace(/^--/,'');
@@ -34,12 +35,13 @@ function execute(command,args=[],{cwd,env={},capture=false,allowFailure=false}={
 function composeArgs(home) {return ['compose','--project-name',`dbtv-${createHash('sha256').update(home).digest('hex').slice(0,12)}`,'--file',path.join(home,'compose.json')];}
 function docker(home,args,opts={}) {return execute('docker',[...composeArgs(home),...args],opts);}
 function application(home,state,command,args=[],opts={}) {
+  verifyNativeAccount(state);
   const env={...environment(home,state),PATH:`${path.dirname(state.node)}:${process.env.PATH}`,...opts.env};
   if(state.mode==='termux') {
     const pairs=Object.entries(env).filter(([key])=>key!=='PATH').map(([key,value])=>`${key}=${value}`);
     return execute('proot-distro',['login','dbtv','--bind',`${home}:${home}`,'--','/bin/sh','-c',`cd ${shellQuote(state.source)} && exec /usr/bin/env ${[`PATH=${path.dirname(state.node)}:/usr/local/bin:/usr/bin:/bin`,...pairs,command,...args].map(shellQuote).join(' ')}`],{...opts,cwd:state.source});
   }
-  if(process.getuid?.()===0&&state.mode==='native') return execute('runuser',['-u','dabiaotv','--',command,...args],{...opts,cwd:state.source,env});
+  if(process.getuid?.()===0&&state.mode==='native') return execute('runuser',['-u',nativeServiceUser(state),'--',command,...args],{...opts,cwd:state.source,env});
   return execute(command,args,{...opts,cwd:state.source,env});
 }
 function npmPath(state) {return path.resolve(path.dirname(state.node),'../lib/node_modules/npm/bin/npm-cli.js');}
@@ -91,7 +93,7 @@ function persist(home,state) {
   if(state.mode==='native'&&process.getuid?.()===0) {
     // The service reads a private copy; the root management entry/config stay root-owned.
     save(path.join(home,'data'),state);
-    execute('chown',['dabiaotv:dabiaotv',path.join(home,'data/deployment.json')]);
+    execute('chown',[`${nativeServiceUser(state)}:${nativeServiceUser(state)}`,path.join(home,'data/deployment.json')]);
   }
 }
 function protectNative(home,state) {
@@ -99,7 +101,7 @@ function protectNative(home,state) {
   execute('chown',['-R','root:root',home]);
   execute('chmod',['755',home]);
   execute('chmod',['-R','a+rX',path.join(home,'app'),path.join(home,'tools')]);
-  for(const directory of ['data','app/.generated','app/node_modules'])execute('chown',['-R','dabiaotv:dabiaotv',path.join(home,directory)]);
+  for(const directory of ['data','app/.generated','app/node_modules'])execute('chown',['-R',`${nativeServiceUser(state)}:${nativeServiceUser(state)}`,path.join(home,directory)]);
 }
 function registerService(home,state) {
   if(state.mode==='docker')return;
@@ -131,7 +133,7 @@ async function backup(home,state,{offline=false}={}) {
         docker(home,['run','--rm','--no-deps','--entrypoint','node','-e',`BACKUP_DIR=/app/data/.snapshot-${id}`,'dabiao-tv','scripts/backup-database.mjs']);
       }else docker(home,['exec','-T','-e',`BACKUP_DIR=/app/data/.snapshot-${id}`,'dabiao-tv','node','scripts/backup-database.mjs']);
     } else {
-      privateDirectory(scratch);if(state.mode==='native')execute('chown',['dabiaotv:dabiaotv',scratch]);
+      privateDirectory(scratch);if(state.mode==='native')execute('chown',[`${nativeServiceUser(state)}:${nativeServiceUser(state)}`,scratch]);
       application(home,state,state.node,[path.join(state.source,'scripts/backup-database.mjs')],{env:{BACKUP_DIR:scratch}});
     }
     // Pin the source directory. Never copy through a web-writable symlink into root files.
@@ -160,6 +162,7 @@ async function backup(home,state,{offline=false}={}) {
   finally {if(directoryFD!==undefined)fs.closeSync(directoryFD);if(fs.existsSync(scratch)&&!fs.lstatSync(scratch).isSymbolicLink())fs.rmSync(scratch,{recursive:true});}
 }
 async function serve(home,state) {
+  verifyNativeAccount(state);
   // Called by systemd/runit, not a PID-file background daemon. Never expose setup tokens in logs.
   const env={...process.env,...environment(home,state),PATH:`${path.dirname(state.node)}:${process.env.PATH}`};
   let command=state.node,args=[npmPath(state),'start'];
@@ -249,7 +252,8 @@ async function main() {
       if(!['127.0.0.1','0.0.0.0'].includes(bind))throw Error('监听地址只能是127.0.0.1或0.0.0.0');
       const port=await choosePort({value:opts.port,host:bind,ask,report:say});
       const domain=origin(opts.origin!==undefined?opts.origin:opts.yes?'':await ask('访问域名（可留空，以后设置）：'));
-      const state={version:1,id:'dbtv',mode,bind,port,origin:domain,source:path.resolve(opts.source||path.join(home,'app')),node:path.resolve(opts.node||process.execPath),createdAt:new Date().toISOString()};
+      const state={version:1,id:'dbtv',mode,bind,port,origin:domain,source:path.resolve(opts.source||path.join(home,'app')),node:path.resolve(opts.node||process.execPath),createdAt:new Date().toISOString(),...mode==='native'?{serviceUser:nativeServiceUser({serviceUser:opts['service-user']})}:{}};
+      if(mode!=='native'&&opts['service-user']!==undefined)throw Error('--service-user 仅支持 native 安装');
       if(state.source!==path.join(home,'app'))throw Error('自动安装仅接受管理目录下的 app 源码，避免接管现有站点；请使用 install.sh');
       requireRoot(state);
       if(mode==='termux'&&!termux)throw Error('termux 模式必须在 Termux 宿主执行');
@@ -257,13 +261,13 @@ async function main() {
       if(!fs.existsSync(path.join(state.source,'package-lock.json')))throw Error('缺少源码或锁文件，请先运行 install.sh');
       if(mode==='native'&&fs.existsSync('/etc/systemd/system/dabiao-tv-managed.service')||mode==='termux'&&fs.existsSync(path.join(process.env.PREFIX,'var/service/dabiao-tv')))throw Error('已有同名管理服务，拒绝接管或覆盖；请先确认已有部署位置');
       if(fs.existsSync(path.join(state.source,'.env'))||fs.existsSync(path.join(state.source,'prisma/dev.db')))throw Error('发现已有私有配置或数据库，拒绝当成新站覆盖；请先备份并按文档迁移');
+      const accountPlan=mode==='native'?planNativeAccount({user:state.serviceUser,home}):null;
       await confirm(`安装到 ${home}，端口 ${port}，方式 ${mode}，将创建专属服务；不更改防火墙或现有反代`);
       privateDirectory(path.join(home,'data'));managerFiles(home,state);
       if(mode==='native') {
-        const identity=execute('id',['-u','dabiaotv'],{capture:true,allowFailure:true});
-        if(!identity.ok)execute('useradd',['--system','--user-group','--home-dir',home,'--shell','/usr/sbin/nologin','dabiaotv']);
-        else if(Number(identity.text.trim())===0)throw Error('专用服务账号不能具有root身份');
-        execute('chown',['-R','dabiaotv:dabiaotv',home]);
+        createNativeAccount(accountPlan);
+        state.serviceUid=accountPlan.uid;state.serviceGid=accountPlan.gid;
+        execute('chown',['-R',`${nativeServiceUser(state)}:${nativeServiceUser(state)}`,home]);
       }
       if(mode==='docker')docker(home,['build']);
       else {
@@ -282,7 +286,7 @@ async function main() {
       service(home,state,'start');await waitHealthy(home,state);
       showStatus(await status(home,state),opts.json);return;
     }
-    const state=read(home);requireRoot(state);
+    const state=read(home);requireRoot(state);verifyNativeAccount(state);
     if(['enable-updates','update-worker','update','rollback'].includes(command)){
       if(command==='enable-updates'){
         await confirm('启用独立更新代理；允许后台经管理员确认后安装签名正式版，SQLite先停站备份，不授予网页root或Docker socket');
@@ -294,11 +298,11 @@ async function main() {
         const controller=path.join(home,'manager');privateDirectory(controller);
         for(const file of ['tv.mjs','releases.cjs'])fs.copyFileSync(path.join(path.dirname(entry),file),path.join(controller,file));
         privateDirectory(path.join(controller,'tv'));
-        for(const file of ['core.mjs','updates.mjs','update-driver.mjs'])fs.copyFileSync(path.join(path.dirname(entry),'tv',file),path.join(controller,'tv',file));
+        for(const file of ['core.mjs','updates.mjs','update-driver.mjs','build.mjs','native-account.mjs'])fs.copyFileSync(path.join(path.dirname(entry),'tv',file),path.join(controller,'tv',file));
         const agentEntry=path.join(controller,'tv.mjs');
         updates.enable(home,key);
         const directory=updates.publicStatus(home,{enabled:false,currentContract:(state.release||releases.current(state.source)).dataContract});
-        const driver=createDriver(home,{execute,docker,application,npmPath,processRunning,service,backup,persist,waitHealthy,key,mode:state.mode});await driver.permissions(directory);
+        const driver=createDriver(home,{execute,docker,application,npmPath,processRunning,service,backup,persist,waitHealthy,key,mode:state.mode,serviceUser:state.serviceUser});await driver.permissions(directory);
         if(state.mode==='termux'){
           const dir=path.join(process.env.PREFIX,'var/service/dabiao-tv-updates');if(fs.existsSync(dir))throw Error('已有同名更新代理，拒绝覆盖');privateDirectory(dir);
           atomic(path.join(dir,'run'),`#!${process.env.PREFIX}/bin/sh\nwhile true; do\n${shellQuote(agentNode)} ${shellQuote(agentEntry)} update-worker --home ${shellQuote(home)}\nsleep 10\ndone\n`,0o700);
@@ -314,7 +318,7 @@ async function main() {
         updates.publicStatus(home,{currentContract:(state.release||releases.current(state.source)).dataContract});await driver.permissions(directory);
         console.log(opts.json?JSON.stringify({ok:true,enabled:true}):'已启用独立更新代理；只接受签名正式版和已记录的兼容回退。');return;
       }
-      const key=updates.policy(home).publicKey,driver=createDriver(home,{execute,docker,application,npmPath,processRunning,service,backup,persist,waitHealthy,key,mode:state.mode});
+      const key=updates.policy(home).publicKey,driver=createDriver(home,{execute,docker,application,npmPath,processRunning,service,backup,persist,waitHealthy,key,mode:state.mode,serviceUser:state.serviceUser});
       if(command==='update-worker'){
         const result=await updates.consume(home,state,driver);if(result.state!=='idle')console.log(JSON.stringify(result));return;
       }

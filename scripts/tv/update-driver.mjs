@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import releases from '../releases.cjs';
-import {privateDirectory,health} from './core.mjs';
+import {privateDirectory,health,nativeServiceUser} from './core.mjs';
 
 export function createDriver(home,adapter){
   const inspect=image=>{
@@ -23,6 +23,7 @@ export function createDriver(home,adapter){
     },
     prepare:async(state,remote)=>{
       const manifest=remote.manifest;
+      const serviceUser=state.mode==='native'?nativeServiceUser(state):undefined;
       if(state.mode==='docker'){
         adapter.execute('docker',['pull',manifest.image]);
         const image=inspect(manifest.image),labels=image.Config?.Labels||{};
@@ -45,14 +46,14 @@ export function createDriver(home,adapter){
         if(selected.version!==manifest.version||selected.channel!=='stable'||releases.dataContract(source)!==manifest.dataContract||releases.publicKey(source)?.trim()!==adapter.key.trim())throw Error('源码版本、数据兼容标识或更新公钥与正式清单不符');
         const next={...state,source};
         fs.chmodSync(path.join(home,'releases'),0o755);fs.chmodSync(directory,0o755);
-        if(state.mode==='native')adapter.execute('chown',['-R','dabiaotv:dabiaotv',directory]);
+        if(state.mode==='native')adapter.execute('chown',['-R',`${serviceUser}:${serviceUser}`,directory]);
         adapter.application(home,next,next.node,[adapter.npmPath(next),...buildDependencyArgs()]);
         adapter.application(home,next,next.node,[adapter.npmPath(next),'run','build']);
         if(releases.current(source).dataContract!==manifest.dataContract||releases.dataContract(source)!==manifest.dataContract)throw Error('构建期间源码发生变化，拒绝切换版本');
         adapter.application(home,next,next.node,[adapter.npmPath(next),'cache','clean','--force']);
         if(state.mode==='native'){
           adapter.execute('chown',['-R','root:root',directory]);adapter.execute('chmod',['-R','a+rX',directory]);
-          for(const writable of ['.generated','node_modules'])adapter.execute('chown',['-R','dabiaotv:dabiaotv',path.join(source,writable)]);
+          for(const writable of ['.generated','node_modules'])adapter.execute('chown',['-R',`${serviceUser}:${serviceUser}`,path.join(source,writable)]);
         }
         return next;
       }finally{if(fs.existsSync(archive))fs.unlinkSync(archive);}
@@ -69,7 +70,10 @@ export function createDriver(home,adapter){
       if(state.release&&(value.version!==state.release.version||value.dataContract!==state.release.dataContract))throw Error('响应不是目标版本及数据兼容标识，禁止宣称更新成功');
     },
     permissions:async directory=>{
-      if(adapter.mode==='native')adapter.execute('chown',['-R','dabiaotv:dabiaotv',directory]);
+      if(adapter.mode==='native'){
+        const serviceUser=nativeServiceUser(adapter);
+        adapter.execute('chown',['-R',`${serviceUser}:${serviceUser}`,directory]);
+      }
     }
   };
 }

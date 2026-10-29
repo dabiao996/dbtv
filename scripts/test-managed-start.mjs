@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import os from 'node:os';
 import {once} from 'node:events';
 import {spawn} from 'node:child_process';
 import {save} from './tv/core.mjs';
@@ -16,7 +17,9 @@ export async function testManagedStart(root,baseEnv){
   assert.ok(fs.existsSync(path.join(npm,'bin/npm-cli.js')),'regression requires Node distribution npm');
   const npmTarget=path.join(home,'tools/node/lib/node_modules/npm');fs.mkdirSync(path.dirname(npmTarget),{recursive:true});fs.symlinkSync(npm,npmTarget);
   const probe=net.createServer();probe.listen(0,'127.0.0.1');await once(probe,'listening');const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
-  save(data,{version:1,id:'dbtv',mode:'native',source:root,node,port,bind:'127.0.0.1',origin:''});
+  // Use only the current test identity; never create or alter a host account.
+  const serviceUser=os.userInfo().username;
+  save(data,{version:1,id:'dbtv',mode:'native',source:root,node,port,bind:'127.0.0.1',origin:'',serviceUser,serviceUid:process.getuid(),serviceGid:process.getgid()});
   const env={...baseEnv,HOME:home,DB_AUTO_SYNC:'true'};delete env.PREFIX;delete env.INSTALL_TOKEN;
   const child=spawn(node,[path.join(root,'scripts/tv.mjs'),'serve','--home',home],{env,cwd:root,detached:true,stdio:['ignore','pipe','pipe']});
   let logs='';for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{logs+=chunk.toString();});
