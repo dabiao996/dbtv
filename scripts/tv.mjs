@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline/promises';
 import {randomUUID,createHash} from 'node:crypto';
-import {APP,DEFAULT_PORT,portNumber,origin,available,choosePort,privateDirectory,atomic,secureCopy,backupLiveCatalog,read,save,environment,writeEnvironment,addresses,health,redact,compose,systemdUnit} from './tv/core.mjs';
+import {APP,DEFAULT_PORT,portNumber,origin,available,choosePort,question,privateDirectory,atomic,secureCopy,backupLiveCatalog,read,save,environment,writeEnvironment,addresses,health,redact,compose,systemdUnit} from './tv/core.mjs';
 import releases from './releases.cjs';
 import * as updates from './tv/updates.mjs';
 import {createDriver} from './tv/update-driver.mjs';
@@ -198,7 +198,7 @@ async function main() {
   let rl;
   const ask=async text=>{
     if(opts.yes||!process.stdin.isTTY)throw Error('非交互执行必须提供完整参数，例如 --port 8787 --origin https://tv.example.com');
-    rl??=createInterface({input:process.stdin,output:process.stderr});return rl.question(text);
+    rl??=createInterface({input:process.stdin,output:process.stderr});return question(rl,text);
   };
   const confirm=async message=>{if(!opts.yes&&(await ask(`${message} [y/N]：`)).toLowerCase()!=='y')throw Error('操作已取消');};
   let locked=false;

@@ -5,10 +5,12 @@ import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import http from 'node:http';
+import {PassThrough} from 'node:stream';
+import {createInterface} from 'node:readline/promises';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
-import {portNumber,origin,available,choosePort,save,read,environment,compose,systemdUnit,redact,health,secureCopy,backupLiveCatalog,restoreLiveCatalog} from './core.mjs';
+import {portNumber,origin,available,choosePort,question,addresses,save,read,environment,compose,systemdUnit,redact,health,secureCopy,backupLiveCatalog,restoreLiveCatalog} from './core.mjs';
 const exec=promisify(execFile),root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const cli=path.join(root,'scripts/tv.mjs');
 const temporary=t=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dbtv-deploy-test-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));return dir;};
@@ -226,4 +228,39 @@ test('public source copy omits databases, credentials, generated output and syml
   const result=await exec(process.execPath,[path.join(root,'scripts/tv/copy-source.mjs'),source,destination]);assert.equal(result.stderr,'');
   assert.equal(fs.existsSync(path.join(destination,'.env')),false);assert.equal(fs.existsSync(path.join(destination,'prisma/dev.db')),false);assert.equal(fs.existsSync(path.join(destination,'prisma/linked-secret')),false);assert.equal(fs.readFileSync(path.join(destination,'.env.example'),'utf8'),'public');
   assert.equal(fs.readFileSync(path.join(destination,'deploy/update-public.pem'),'utf8'),'public-key');assert.equal(fs.existsSync(path.join(destination,'deploy/private.key')),false);
+});
+
+test('EOF answer is a controlled cancellation, never a trim TypeError',async()=>{
+  for(const answer of [null,undefined])await assert.rejects(choosePort({ask:async()=>answer}),error=>error.code==='INPUT_CLOSED');
+});
+test('readline EOF cancels an outstanding question and removes close listener',async()=>{
+  const input=new PassThrough(),output=new PassThrough();
+  const rl=createInterface({input,output});
+  const pending=question(rl,'Port: ');
+  input.end();
+  await assert.rejects(pending,error=>error.code==='INPUT_CLOSED');
+  assert.equal(rl.listenerCount('close'),0);
+  await assert.rejects(question(rl,'Again: '),error=>error.code==='INPUT_CLOSED');
+});
+test('exhausted port range terminates instead of asking forever',async t=>{
+  const server=net.createServer();
+  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(65535,'127.0.0.1',resolve);});
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  let asks=0;
+  await assert.rejects(choosePort({defaultPort:65535,host:'127.0.0.1',ask:async()=>{asks++;return '';}}),error=>error.code==='NO_AVAILABLE_PORT');
+  assert.equal(asks,1);
+  await assert.rejects(choosePort({value:65535,host:'127.0.0.1'}),error=>error.code==='PORT_IN_USE');
+});
+test('Linux bind probe does not depend on intercepted outbound TCP or interface enumeration',async t=>{
+  if(process.platform!=='linux'){t.skip('Linux exclusive bind semantics');return;}
+  const server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const port=server.address().port;await new Promise(resolve=>server.close(resolve));
+  t.mock.method(net,'connect',()=>{throw Error('outbound TCP must not be used');});
+  t.mock.method(os,'networkInterfaces',()=>{throw Error('restricted network interfaces');});
+  assert.equal(await available(port),true);
+});
+
+test('status keeps loopback URL when interface enumeration is restricted',t=>{
+  t.mock.method(os,'networkInterfaces',()=>{throw Error('restricted');});
+  assert.deepEqual(addresses({port:8787,bind:'0.0.0.0',origin:''}),{local:'http://127.0.0.1:8787',lan:[],domain:null,publicIP:null});
 });

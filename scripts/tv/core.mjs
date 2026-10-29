@@ -22,15 +22,6 @@ export function origin(value='') {
 }
 export async function available(port, host='0.0.0.0') {
   portNumber(port);
-  // macOS/BSD may permit wildcard bind alongside a specific-address listener.
-  // A real local TCP connection detects that case as well as normal Linux binds.
-  const targets=host==='0.0.0.0'?['127.0.0.1','::1',...Object.values(os.networkInterfaces()).flat().filter(x=>x&&!x.internal).map(x=>x.address)]:[host];
-  const accepting=await Promise.all([...new Set(targets)].map(address=>new Promise(resolve=>{
-    const socket=net.connect({host:address,port});let finished=false;
-    const done=value=>{if(finished)return;finished=true;socket.destroy();resolve(value);};
-    socket.setTimeout(300,()=>done(false));socket.once('connect',()=>done(true));socket.once('error',()=>done(false));
-  })));
-  if(accepting.some(Boolean))return false;
   const probe=address=>new Promise((resolve,reject)=>{
     const server=net.createServer();server.unref();
     server.once('error',error=>{
@@ -42,7 +33,22 @@ export async function available(port, host='0.0.0.0') {
   });
   if (!await probe(host)) return false;
   // Check IPv6 too: an IPv6-only listener must not be mistaken for a free port.
-  return host==='0.0.0.0'?probe('::'):true;
+  if (host==='0.0.0.0'&&!await probe('::')) return false;
+  // Exclusive binds are authoritative on Linux; outbound connections can be
+  // intercepted by transparent proxies and falsely mark every port as busy.
+  if (!['darwin','freebsd'].includes(process.platform)) return true;
+  let interfaces=[];
+  try {interfaces=Object.values(os.networkInterfaces()).flat();} catch {}
+  // macOS/BSD may permit wildcard bind alongside a specific-address listener.
+  // A real local TCP connection detects that case as well as normal Linux binds.
+  const targets=host==='0.0.0.0'?['127.0.0.1','::1',...interfaces.filter(x=>x&&!x.internal).map(x=>x.address)]:[host];
+  const accepting=await Promise.all([...new Set(targets)].map(address=>new Promise(resolve=>{
+    const socket=net.connect({host:address,port});let finished=false;
+    const done=value=>{if(finished)return;finished=true;socket.destroy();resolve(value);};
+    socket.setTimeout(300,()=>done(false));socket.once('connect',()=>done(true));socket.once('error',()=>done(false));
+  })));
+  if(accepting.some(Boolean))return false;
+  return true;
 }
 export async function suggest(port,host) {
   for (let candidate=Number(port)+1;candidate<=Math.min(Number(port)+100,65535);candidate++) if(await available(candidate,host)) return candidate;
@@ -51,7 +57,12 @@ export async function suggest(port,host) {
 export async function choosePort({value,initial,defaultPort=DEFAULT_PORT,host='0.0.0.0',ask,report=()=>{}}) {
   for (;;) {
     let selected;
-    const input=value!==undefined?value:initial!==undefined?initial:(await ask(`监听端口 [${defaultPort}]：`)).trim()||defaultPort;
+    let input=value!==undefined?value:initial;
+    if(input===undefined) {
+      const answer=await ask(`监听端口 [${defaultPort}]：`);
+      if(typeof answer!=='string') throw inputClosed();
+      input=answer.trim()||defaultPort;
+    }
     initial=undefined;
     try {selected=portNumber(input);}
     catch(error) {if(value!==undefined)throw error;report(error.message);continue;}
@@ -60,8 +71,23 @@ export async function choosePort({value,initial,defaultPort=DEFAULT_PORT,host='0
     const message=`端口 ${selected} 已被占用，未停止任何服务${next?`；可尝试 ${next}`:''}`;
     if (value!==undefined) {const error=Error(message);error.code='PORT_IN_USE';throw error;}
     report(message);
-    if(next) defaultPort=next;
+    if(!next) {const error=Error(`${message}；候选范围内没有可用端口，请使用 --port 指定其他端口`);error.code='NO_AVAILABLE_PORT';throw error;}
+    defaultPort=next;
   }
+}
+export function inputClosed() {
+  const error=Error('输入已结束，操作已取消；请重新运行并提供完整参数');
+  error.code='INPUT_CLOSED';return error;
+}
+export async function question(rl,text) {
+  if(rl.closed)throw inputClosed();
+  let onClose;
+  try {
+    return await Promise.race([
+      new Promise((resolve,reject)=>{onClose=()=>reject(inputClosed());rl.once('close',onClose);}),
+      rl.question(text),
+    ]);
+  } finally {rl.removeListener('close',onClose);}
 }
 export function privateDirectory(directory) {
   if (fs.existsSync(directory)&&fs.lstatSync(directory).isSymbolicLink()) throw Error('管理目录不能是符号链接');
@@ -218,7 +244,10 @@ export function writeEnvironment(home,state) {
 }
 export function addresses(state) {
   const local=`http://127.0.0.1:${state.port}`;
-  const lan=state.bind==='0.0.0.0'?Object.values(os.networkInterfaces()).flat().filter(x=>x&&!x.internal&&x.family==='IPv4').map(x=>`http://${x.address}:${state.port}`):[];
+  let interfaces=[];
+  // LAN candidates are informational; restricted enumeration must not break status.
+  try {if(state.bind==='0.0.0.0')interfaces=Object.values(os.networkInterfaces()).flat();} catch {}
+  const lan=state.bind==='0.0.0.0'?interfaces.filter(x=>x&&!x.internal&&x.family==='IPv4').map(x=>`http://${x.address}:${state.port}`):[];
   return {local,lan:[...new Set(lan)],domain:state.origin||null,publicIP:null};
 }
 export async function health(state,{timeout=2500,fetcher=fetch}={}) {
