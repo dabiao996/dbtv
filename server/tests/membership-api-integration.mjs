@@ -28,7 +28,7 @@ test('real HTTP membership flow enforces privileges, source restrictions, expiry
     await db.source.createMany({data:[{key:'ordinary',name:'普通源',type:'local',api:'not-public-api'},{key:'premium',name:'会员源',type:'local',api:'not-public-api'}]});
     await db.video.create({data:{id:'premium:1',sourceKey:'premium',title:'测试片',category:'电影'}});
     await db.episode.create({data:{id:'premium:1:0:0',videoId:'premium:1',lineName:'测试线路',name:'正片',url:'https://media.example.invalid/authorized.mp4'}});
-    assert.equal((await call('/membership')).status,401);
+    const guestWallet=await call('/membership');assert.equal(guestWallet.status,200);assert.equal(guestWallet.data.account.guest,true);assert.equal(guestWallet.data.account.membership.planId,'guest');
     assert.equal((await call('/auth/register',{body:{username:'fixture_user',password:'fixture-password-123',confirmPassword:'fixture-password-123'}})).status,403);
     assert.equal((await call('/settings',{cookie:adminCookie,body:{allowRegister:'true'}})).status,200);
     assert.equal((await call('/auth/register',{body:{username:'too_short',password:'abc12',confirmPassword:'abc12'}})).status,400);
@@ -159,7 +159,7 @@ test('real HTTP membership flow enforces privileges, source restrictions, expiry
     assert.equal((await call('/sources/premium/videos/premium%3Aadult',{cookie:userCookie})).status,403);
     assert.equal((await call('/profile/password',{cookie:userCookie,body:{currentPassword:'abc123',newPassword:'abc12'}})).status,400);
     assert.equal((await call('/profile/password',{cookie:userCookie,body:{currentPassword:'abc123',newPassword:'xyz789'}})).status,200);
-    assert.equal((await call('/membership',{cookie:userCookie})).status,401);
+    const revokedWallet=await call('/membership',{cookie:userCookie});assert.equal(revokedWallet.status,200);assert.equal(revokedWallet.data.account.guest,true);
     const relogin=await call('/auth/login',{body:{username:'fixture_user',password:'xyz789'}});assert.equal(relogin.status,200);userCookie=relogin.cookie;
     assert.equal((await call(`/admin/users/${userId}`,{cookie:adminCookie,method:'PUT',body:{password:'rst123'}})).status,200);
     const resetLogin=await call('/auth/login',{body:{username:'fixture_user',password:'rst123'}});assert.equal(resetLogin.status,200);userCookie=resetLogin.cookie;
@@ -169,7 +169,7 @@ test('real HTTP membership flow enforces privileges, source restrictions, expiry
     assert.equal((await call('/settings',{cookie:adminCookie,body:{allowRegister:'false'}})).status,200);
     assert.equal((await call('/auth/register',{body:{username:'blocked_user',password:'fixture-password-123',confirmPassword:'fixture-password-123'}})).status,403);
     assert.equal((await call(`/admin/users/${userId}`,{cookie:adminCookie,method:'PUT',body:{enabled:false}})).status,200);
-    assert.equal((await call('/membership',{cookie:userCookie})).status,401);
+    const disabledWallet=await call('/membership',{cookie:userCookie});assert.equal(disabledWallet.status,200);assert.equal(disabledWallet.data.account.guest,true);
   }finally{
     if(server&&server.exitCode===null){server.kill('SIGTERM');await once(server,'exit');}
     await db.$disconnect();rmSync(folder,{recursive:true,force:true});

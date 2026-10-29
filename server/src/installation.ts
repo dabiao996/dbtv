@@ -7,6 +7,32 @@ import {randomBytes,timingSafeEqual} from 'node:crypto';
 import {createAccount,validPassword} from './identity.js';
 
 const tools=require('../../scripts/web-database.cjs');
+
+// Transient engine/connection failures (SQLite write contention, pool
+// timeouts, brief disconnects) used to surface as one-off 500s on whichever
+// call happened to lose the race — a login once failed with P1008 while the
+// membership wallet retried the same code. Retry them in one shared layer so
+// every model operation gets the same bounded behavior.
+const TRANSIENT_PRISMA_CODES=new Set(['P1001','P1002','P1008','P2024','P2028','P2034']);
+export function withTransientRetry(client:any){
+  return client.$extends({
+    name:'transient-retry',
+    query:{
+      async $allOperations({args,query}:{args:any;query:(args:any)=>Promise<any>}){
+        let lastError:any;
+        for(let attempt=0;attempt<3;attempt++){
+          try{return await query(args);}
+          catch(error:any){
+            lastError=error;
+            if(!TRANSIENT_PRISMA_CODES.has(error?.code)||attempt===2)throw error;
+            await new Promise(resolve=>setTimeout(resolve,40*(attempt+1)+Math.floor(Math.random()*30)));
+          }
+        }
+        throw lastError;
+      },
+    },
+  });
+}
 type Choice={provider:'sqlite'|'mysql'|'postgresql';url:string};
 class SetupError extends Error {constructor(public status:number,message:string){super(message)}}
 const fail=(status:number,message:string):never=>{throw new SetupError(status,message)};
@@ -41,7 +67,7 @@ export function probeDatabase(choice:Choice,prepare:boolean,current:Choice,root=
 
 export function createInstallation(initial:Choice,deps:{hashPassword:(password:string)=>string;settings:Record<string,string>},root=process.cwd()){
   const directory=tools.stateDirectory(root),lockFile=path.join(directory,'installation.lock'),operationFile=path.join(directory,'installation-operation.lock');
-  let choice:Choice=initial,current:any=new (tools.clientConstructor(initial.provider,root))({datasourceUrl:initial.url,log:[]});
+  let choice:Choice=initial,current:any=withTransientRetry(new (tools.clientConstructor(initial.provider,root))({datasourceUrl:initial.url,log:[]}));
   const db=new Proxy({} as PrismaClient,{get(_target,key){const value=Reflect.get(current,key,current);return typeof value==='function'?value.bind(current):value;}});
   let installed=!!tools.readChoice(root)||existsSync(lockFile),connected=false,schemaReady=false,recovery=false,busy=false,token='';
   function markInstalled(){tools.privateDirectory(root);if(!existsSync(lockFile)){try{writeFileSync(lockFile,'installed\n',{mode:0o600,flag:'wx'});}catch(error:any){if(error.code!=='EEXIST')throw error;}}installed=true;}
@@ -102,7 +128,7 @@ export function createInstallation(initial:Choice,deps:{hashPassword:(password:s
             savedId=tools.writeChoice(candidate,root);
           },{timeout:15000,isolationLevel:'Serializable'});
         }catch(error){if(savedId)tools.rollbackChoice(savedId,root);await target.$disconnect();throw error;}
-        const previous=current;current=target;choice=candidate;installed=true;connected=true;schemaReady=true;recovery=false;token='';
+        const previous=current;current=withTransientRetry(target);choice=candidate;installed=true;connected=true;schemaReady=true;recovery=false;token='';
         // The durable database.json also locks reinstall if writing the secondary marker fails.
         try{markInstalled();}catch{}void previous.$disconnect().catch(()=>{});
       });

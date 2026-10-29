@@ -6,6 +6,8 @@ import {readContentRules,validateContentRules,readCategoryRules} from './content
 export const permissionLabels:Record<string,string>={home:'浏览首页',sources:'浏览片库与分类',search:'全站搜索',playback:'影视详情与播放',favorites:'收藏管理',history:'观看历史',recommendations:'个性化推荐',discover:'评分与热门榜',danmaku:'查看及发送弹幕'};
 export const permissionKeys=Object.keys(permissionLabels);
 export const FREE_PLAN='free';
+export const GUEST_PLAN='guest';
+export const GUEST_DEFAULT_PERMISSIONS=['home','sources','search','playback','discover'];
 const MAX_POINTS=1_000_000_000,DAY=86400000;
 class MembershipError extends Error {constructor(public status:number,message:string){super(message);}}
 const reject=(status:number,message:string):never=>{throw new MembershipError(status,message)};
@@ -29,7 +31,10 @@ export function permissionForApi(path:string,method='GET'):string|null{
 
 export function effectiveMembership(user:any,free:any,now=new Date(),groups:any[]=[]){
   const active=!!(user.membershipPlan?.enabled&&user.membershipPlanId!==FREE_PLAN&&user.membershipExpiresAt&&new Date(user.membershipExpiresAt)>now);
-  const plan=active?user.membershipPlan:free;
+  // The synthetic guest account carries the dedicated guest plan; it never
+  // expires and never falls back to the registered-user free plan.
+  const guestPlan=user?.membershipPlanId===GUEST_PLAN&&user?.membershipPlan?.id===GUEST_PLAN?user.membershipPlan:null;
+  const plan=guestPlan||(active?user.membershipPlan:free);
   const admin=user.role==='admin';
   const contentRules=admin?readContentRules(null):readContentRules(plan.contentRules);
   // New simplified editor makes the grade's visible selection authoritative.
@@ -52,7 +57,11 @@ export function effectiveMembership(user:any,free:any,now=new Date(),groups:any[
 
 export function createMembershipService(db:any,clock=()=>new Date()){
   let initialized:Promise<any>|undefined;
-  function ready(){return initialized||=(db.membershipPlan.upsert({where:{id:FREE_PLAN},update:{},create:{id:FREE_PLAN,name:'普通用户',description:'默认保留现有页面功能；源访问沿用账号授权。管理员可调整此等级。',enabled:true,pricePoints:0,durationDays:0,permissions:JSON.stringify(permissionKeys),sourceKeys:'[]',allSources:false}}).then(()=>backfillMemberNumbers(db)).catch((error:any)=>{initialized=undefined;throw error}));}
+  function ready(){return initialized||=(async()=>{
+    await db.membershipPlan.upsert({where:{id:FREE_PLAN},update:{},create:{id:FREE_PLAN,name:'普通用户',description:'默认保留现有页面功能；源访问沿用账号授权。管理员可调整此等级。',enabled:true,pricePoints:0,durationDays:0,permissions:JSON.stringify(permissionKeys),sourceKeys:'[]',allSources:false}});
+    await db.membershipPlan.upsert({where:{id:GUEST_PLAN},update:{},create:{id:GUEST_PLAN,name:'游客',description:'未登录访客使用的等级：可浏览、搜索与播放，收藏/历史/弹幕等个人功能需登录。停用此等级后，未登录访问将恢复为必须登录。',enabled:true,pricePoints:0,durationDays:0,permissions:JSON.stringify(GUEST_DEFAULT_PERMISSIONS),sourceKeys:'[]',allSources:true}});
+    await backfillMemberNumbers(db);
+  })().catch((error:any)=>{initialized=undefined;throw error});}
   async function hydrate(user:any){
     await ready();
     const [free,groups]=await Promise.all([db.membershipPlan.findUnique({where:{id:FREE_PLAN}}),db.accessGroup.findMany({where:{enabled:true}})]);
@@ -61,24 +70,41 @@ export function createMembershipService(db:any,clock=()=>new Date()){
     const sourceKeys=access.allSources?(await db.source.findMany({select:{key:true}})).map((x:any)=>x.key).filter((key:string)=>!access.contentRules.deniedSourceKeys.includes(key)):access.sourceKeys;
     return {...user,...access,memberNo,accessAllSources:access.allSources,sourceAccess:sourceKeys.map((sourceKey:string)=>({sourceKey})),pageAccess:access.permissions.join(',')};
   }
-  const summary=(user:any)=>({id:user.id,memberNo:user.memberNo,username:user.username,displayName:user.displayName,avatarUrl:user.avatarUrl,role:user.role,enabled:user.enabled,points:user.points,pageAccess:user.pageAccess,permissions:user.permissions,contentRules:user.contentRules,sourceKeys:user.accessAllSources&&!readContentRules(user.contentRules).deniedSourceKeys.length?['*']:user.sourceAccess.map((x:any)=>x.sourceKey),membership:user.membership});
-  async function wallet(user:any){await ready();const [storedPlans,ledger,groups]=await Promise.all([db.membershipPlan.findMany({where:{enabled:true,id:{not:FREE_PLAN}},orderBy:[{pricePoints:'asc'},{id:'asc'}]}),db.pointLedger.findMany({where:{userId:user.id},orderBy:[{createdAt:'desc'},{id:'desc'}],take:100}),db.accessGroup.findMany({where:{enabled:true}})]);const plans=storedPlans.map((plan:any)=>{const access=effectiveMembership({role:'user',sourceAccess:[],membershipPlanId:plan.id,membershipPlan:plan,membershipExpiresAt:new Date(clock().getTime()+86400000)},plan,clock(),groups);return {...plan,permissions:JSON.stringify(access.permissions),sourceKeys:JSON.stringify(access.sourceKeys)}});return {account:summary(user),plans,ledger,permissionLabels,payment:{enabled:false,message:'暂未接入在线支付。积分由管理员赠送或调整，本页仅支持积分兑换会员。'}};}
-  function planInput(body:any,isFree=false){
+  // Synthetic account for anonymous visitors, resolved through the same
+  // membership pipeline as real users so the admin-editable guest plan and
+  // access groups apply uniformly. Returns null when the guest plan is
+  // disabled, which restores the login-required behavior. The guest never
+  // owns rows: account-bound endpoints keep requiring a real session.
+  async function guest(){
+    await ready();
+    const [plan,free,groups]=await Promise.all([db.membershipPlan.findUnique({where:{id:GUEST_PLAN}}),db.membershipPlan.findUnique({where:{id:FREE_PLAN}}),db.accessGroup.findMany({where:{enabled:true}})]);
+    if(!plan?.enabled)return null;
+    const base:any={id:0,username:'guest',displayName:'游客',memberNo:'GUEST',avatarUrl:null,role:'user',enabled:true,points:0,walletVersion:0,accessGroupIds:null,membershipPlanId:GUEST_PLAN,membershipPlan:plan,membershipExpiresAt:null,sourceAccess:[],createdAt:new Date(0),guest:true};
+    const access=effectiveMembership(base,free,clock(),groups);
+    const sourceKeys=access.allSources?(await db.source.findMany({select:{key:true}})).map((x:any)=>x.key).filter((key:string)=>!access.contentRules.deniedSourceKeys.includes(key)):access.sourceKeys;
+    return {...base,...access,accessAllSources:access.allSources,sourceAccess:sourceKeys.map((sourceKey:string)=>({sourceKey})),pageAccess:access.permissions.join(',')};
+  }
+  const summary=(user:any)=>({id:user.id,memberNo:user.memberNo,username:user.username,displayName:user.displayName,avatarUrl:user.avatarUrl,role:user.role,enabled:user.enabled,points:user.points,guest:!!user.guest,pageAccess:user.pageAccess,permissions:user.permissions,contentRules:user.contentRules,sourceKeys:user.accessAllSources&&!readContentRules(user.contentRules).deniedSourceKeys.length?['*']:user.sourceAccess.map((x:any)=>x.sourceKey),membership:user.membership});
+  async function wallet(user:any){await ready();const [storedPlans,ledger,groups]=await Promise.all([db.membershipPlan.findMany({where:{enabled:true,id:{notIn:[FREE_PLAN,GUEST_PLAN]}},orderBy:[{pricePoints:'asc'},{id:'asc'}]}),db.pointLedger.findMany({where:{userId:user.id},orderBy:[{createdAt:'desc'},{id:'desc'}],take:100}),db.accessGroup.findMany({where:{enabled:true}})]);const plans=storedPlans.map((plan:any)=>{const access=effectiveMembership({role:'user',sourceAccess:[],membershipPlanId:plan.id,membershipPlan:plan,membershipExpiresAt:new Date(clock().getTime()+86400000)},plan,clock(),groups);return {...plan,permissions:JSON.stringify(access.permissions),sourceKeys:JSON.stringify(access.sourceKeys)}});return {account:summary(user),plans,ledger,permissionLabels,payment:{enabled:false,message:'暂未接入在线支付。积分由管理员赠送或调整，本页仅支持积分兑换会员。'}};}
+  function planInput(body:any,kind:'paid'|'free'|'guest'='paid'){
     const name=typeof body.name==='string'?body.name.trim():'';
     const description=typeof body.description==='string'?body.description.trim():'';
     if(name.length<1||name.length>40||description.length>500)reject(400,'名称需为1–40字，说明最多500字');
     if(!Array.isArray(body.permissions)||body.permissions.some((x:any)=>!permissionKeys.includes(x)))reject(400,'权限选项无效');
     if(!Array.isArray(body.sourceKeys)||body.sourceKeys.length>500||body.sourceKeys.some((x:any)=>typeof x!=='string'||x.length>191))reject(400,'数据源授权无效');
     if(typeof body.allSources!=='boolean'||typeof body.enabled!=='boolean')reject(400,'启用状态和源授权选项无效');
-    if(!isFree&&(!Number.isInteger(body.pricePoints)||body.pricePoints<1||body.pricePoints>1_000_000||!Number.isInteger(body.durationDays)||body.durationDays<1||body.durationDays>3650))reject(400,'套餐积分需为1–1000000，天数需为1–3650的整数');
+    if(kind==='paid'&&(!Number.isInteger(body.pricePoints)||body.pricePoints<1||body.pricePoints>1_000_000||!Number.isInteger(body.durationDays)||body.durationDays<1||body.durationDays>3650))reject(400,'套餐积分需为1–1000000，天数需为1–3650的整数');
     if(body.accessGroupIds!==undefined&&body.accessGroupIds!==null&&(!Array.isArray(body.accessGroupIds)||body.accessGroupIds.length>30||body.accessGroupIds.some((id:any)=>typeof id!=='string'||id.length>191)))reject(400,'授权分组无效');
     let contentRules:string|undefined;
     if(body.contentRules!==undefined){try{const raw=typeof body.contentRules==='string'?JSON.parse(body.contentRules):body.contentRules;contentRules=JSON.stringify(validateContentRules(raw===null?readContentRules(null):raw))}catch{reject(400,'内容限制或分类规则无效')}}
-    return {name,description,pricePoints:isFree?0:body.pricePoints,durationDays:isFree?0:body.durationDays,enabled:isFree?true:body.enabled,permissions:JSON.stringify([...new Set(body.permissions)]),sourceKeys:JSON.stringify([...new Set(body.sourceKeys)]),allSources:body.allSources,...contentRules===undefined?{}:{contentRules},...body.accessGroupIds===undefined?{}:{accessGroupIds:JSON.stringify([...new Set(body.accessGroupIds||[])])}};
+    // The guest "plan" is a built-in tier like the free plan (no price or
+    // duration), except its enabled flag is meaningful: disabling it turns
+    // guest mode off.
+    return {name,description,pricePoints:kind==='paid'?body.pricePoints:0,durationDays:kind==='paid'?body.durationDays:0,enabled:kind==='free'?true:body.enabled,permissions:JSON.stringify([...new Set(body.permissions)]),sourceKeys:JSON.stringify([...new Set(body.sourceKeys)]),allSources:body.allSources,...contentRules===undefined?{}:{contentRules},...body.accessGroupIds===undefined?{}:{accessGroupIds:JSON.stringify([...new Set(body.accessGroupIds||[])])}};
   }
   async function savePlan(actor:any,id:string|undefined,body:any){
     if(actor.role!=='admin')reject(403,'需要管理员权限');await ready();
-    const data=planInput(body,id===FREE_PLAN);
+    const data=planInput(body,id===FREE_PLAN?'free':id===GUEST_PLAN?'guest':'paid');
     const count=await db.source.count({where:{key:{in:strings(data.sourceKeys)}}});if(count!==strings(data.sourceKeys).length)reject(400,'包含不存在的数据源');
     if(data.accessGroupIds!==undefined)await validateGroups(strings(data.accessGroupIds));
     if(data.contentRules){const rules=readContentRules(data.contentRules),keys=[...new Set([...rules.deniedSourceKeys,...rules.deniedCategories.map(rule=>rule.sourceKey).filter(key=>key!=='*')])];if(await db.source.count({where:{key:{in:keys}}})!==keys.length)reject(400,'限制规则包含不存在的数据源');}
@@ -155,7 +181,7 @@ export function createMembershipService(db:any,clock=()=>new Date()){
   }
   async function redeem(user:any,body:any){
     await ready();const planId=String(body.planId||'');
-    if(!planId||planId===FREE_PLAN||planId.length>191||!Number.isInteger(body.expectedVersion))reject(400,'请选择有效套餐并刷新价格');
+    if(!planId||planId===FREE_PLAN||planId===GUEST_PLAN||planId.length>191||!Number.isInteger(body.expectedVersion))reject(400,'请选择有效套餐并刷新价格');
     const key=requestKey(body.requestId,`redeem:${user.id}`),hash=digest([planId,body.expectedVersion]);
     return transaction(key,hash,async tx=>{
       const now=clock(),target=await tx.user.findUnique({where:{id:user.id}}),plan=await tx.membershipPlan.findUnique({where:{id:planId}});
@@ -173,7 +199,7 @@ export function createMembershipService(db:any,clock=()=>new Date()){
       return {ok:true,replayed:false,entry};
     });
   }
-  return {ready,hydrate,summary,wallet,savePlan,saveGroup,validateGroups,adjust,redeem};
+  return {ready,hydrate,guest,summary,wallet,savePlan,saveGroup,validateGroups,adjust,redeem};
 }
 
 export function registerMembership(app:Express,db:any,auth:{requireUser:any;requireAdmin:any;hashPassword:any},service=createMembershipService(db)){
@@ -181,7 +207,7 @@ export function registerMembership(app:Express,db:any,auth:{requireUser:any;requ
   function rate(key:string,max:number,window=60000){let row=attempts.get(key);if(!row||row.at+window<Date.now()){if(attempts.size>5000)attempts.clear();row={at:Date.now(),count:0};attempts.set(key,row);}if(++row.count>max)reject(429,'操作过于频繁，请稍后重试');}
   const run=(fn:any)=>async(req:any,res:any)=>{res.setHeader('Cache-Control','private, no-store');res.setHeader('Vary','Cookie');try{if(['POST','PUT'].includes(req.method)&&!req.is('application/json'))reject(415,'请使用 JSON 请求');await fn(req,res)}catch(e:any){res.status(e instanceof MembershipError?e.status:e.code==='P2002'?409:503).json({error:e instanceof MembershipError?e.message:e.code==='P2002'?'账号或请求标识已存在':'会员服务暂时繁忙，请稍后重试'});}};
   app.get('/api/membership',run(async(req:any,res:any)=>{const u=await auth.requireUser(req,res);if(u)res.json(await service.wallet(u));}));
-  app.post('/api/membership/redeem',run(async(req:any,res:any)=>{const u=await auth.requireUser(req,res);if(!u)return;rate(`redeem:${u.id}`,15);res.json(await service.redeem(u,req.body||{}));}));
+  app.post('/api/membership/redeem',run(async(req:any,res:any)=>{const u=await auth.requireUser(req,res);if(!u)return;if(u.guest)reject(401,'游客不能兑换会员，请先登录');rate(`redeem:${u.id}`,15);res.json(await service.redeem(u,req.body||{}));}));
   app.get('/api/admin/membership',run(async(req:any,res:any)=>{if(!await auth.requireAdmin(req,res))return;await service.ready();const [plans,sources,ledger,groups,totalUsers,activeMembers]=await Promise.all([db.membershipPlan.findMany({orderBy:[{createdAt:'asc'},{id:'asc'}]}),db.source.findMany({select:{key:true,name:true,enabled:true}}),db.pointLedger.findMany({orderBy:[{createdAt:'desc'},{id:'desc'}],take:100}),db.accessGroup.findMany({orderBy:{name:'asc'}}),db.user.count(),db.user.count({where:{membershipExpiresAt:{gt:new Date()},membershipPlan:{enabled:true}}})]);const ids=[...new Set<number>(ledger.flatMap((row:any)=>[row.userId,...row.actorId?[row.actorId]:[]]))];const users=await db.user.findMany({where:{id:{in:ids}},select:{id:true,memberNo:true,username:true,displayName:true,enabled:true,role:true,points:true,membershipPlanId:true,membershipExpiresAt:true}});res.json({plans,users,sources,ledger,groups,stats:{totalUsers,activeMembers,enabledPlans:plans.filter((plan:any)=>plan.id!==FREE_PLAN&&plan.enabled).length},permissionLabels});}));
   app.post('/api/admin/membership/plans',run(async(req:any,res:any)=>{const u=await auth.requireAdmin(req,res);if(u)res.status(201).json(await service.savePlan(u,undefined,req.body||{}));}));
   app.put('/api/admin/membership/plans/:id',run(async(req:any,res:any)=>{const u=await auth.requireAdmin(req,res);if(u)res.json(await service.savePlan(u,req.params.id,req.body||{}));}));

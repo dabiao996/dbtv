@@ -3,9 +3,9 @@ import {createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
 import {unlinkSync} from 'node:fs';
 import {buildLiveCatalog,LIVE_CATALOG,LIVE_METADATA,liveCategories,readLiveLines,publicHttpUrl} from './live-catalog.js';
 import {liveFetch} from './live-network.js';
-import {LiveError,liveError,assertLiveManifest,checkLiveChannel} from './live-health.js';
+import {LiveError,liveError,liveErrors,assertLiveManifest,checkLiveChannel} from './live-health.js';
 import {mergeLiveSupplements} from './live-supplements.js';
-import {liveFilePath,readLiveFile,replaceLiveCache,writeLiveFile,type LiveFile,type LiveFileChannel} from './live-file.js';
+import {liveFilePath,readLiveFileReport,replaceLiveCache,writeLiveFile,type LiveFile,type LiveFileChannel} from './live-file.js';
 
 const stateKey='live:subscription';
 export const countryName=(code:string)=>{try{return code==='ZZ'?'未标注地区':new Intl.DisplayNames(['zh-CN'],{type:'region'}).of(code)||code;}catch{return code;}};
@@ -27,10 +27,29 @@ export function rewriteLiveManifest(text:string,base:string,link:(url:string)=>s
   const rewrite=(value:string)=>{const url=publicHttpUrl(new URL(value,base).href);if(!url)throw Error('直播包含不安全地址');return link(url);};
   return text.split(/\r?\n/).map(line=>line.startsWith('#')?line.replace(/URI="([^"\r\n]+)"/g,(_m,value)=>`URI="${rewrite(value)}"`):line.trim()?rewrite(line.trim()):line).join('\n');
 }
+// Turn an upstream failure into a short, actionable reason for the admin UI
+// instead of a bare "更新失败". LiveError messages are already user-facing.
+export function syncFailureReason(error:any):string{
+  if(error instanceof LiveError)return error.message;
+  const message=String(error?.message||'');
+  if(message.startsWith('订阅源'))return message.slice(0,200);
+  const code=String(error?.code||'');
+  if(code==='ENOTFOUND'||code==='EAI_AGAIN')return '域名解析失败，请检查服务器网络与 DNS';
+  if(code==='ECONNREFUSED')return '连接被直播源拒绝';
+  if(code==='ECONNRESET')return '连接被中途断开';
+  if(/CERT|TLS|SSL/i.test(code)||/certificate/i.test(message))return 'TLS 证书校验失败';
+  if(/TIMEOUT|TIMEDOUT/i.test(code)||/超时/.test(message))return liveErrors.UPSTREAM_TIMEOUT;
+  if(message==='不允许的直播地址'||message==='不允许访问内网地址')return '订阅地址被安全策略拒绝（只允许公网地址）';
+  if(message.includes('目录为空'))return '订阅源没有返回任何频道';
+  if(message.includes('响应过大'))return '订阅源返回内容过大';
+  return message?message.slice(0,120):liveErrors.NETWORK;
+}
+
 export function createLiveService(db:any,request=liveFetch,root:string|null=request===liveFetch?process.cwd():null){
   let running:Promise<void>|null=null,phase='idle',error='';
   let file:LiveFile|null=null,fileError='',modifying=false;
-  const ready=(async()=>{try{if(root)file=readLiveFile(root);if(file)await replaceLiveCache(db,file);}catch{fileError='直播 JSON 无效或无法载入；频道缓存未改动，请检查 live-tv.json';phase='error';}})();
+  let fileIssues:{skipped:number;reasons:string[]}={skipped:0,reasons:[]};
+  const ready=(async()=>{try{if(root){const report=readLiveFileReport(root);if(report){file=report.file;fileIssues={skipped:report.skipped,reasons:report.reasons};if(report.skipped)console.warn(`live-tv.json 有 ${report.skipped} 条无效条目已跳过：${report.reasons.slice(0,5).join('；')}`);}}if(file)await replaceLiveCache(db,file);}catch{fileError='直播 JSON 无效或无法载入；频道缓存未改动，请检查 live-tv.json';phase='error';}})();
   const ensureFile=()=>{if(fileError)throw Object.assign(Error(fileError),{status:503});};
   const state=async()=>{try{return JSON.parse((await db.setting.findUnique({where:{key:stateKey}}))?.value||'{}');}catch{return {};}};
   async function updateFile(next:LiveFile,change:()=>Promise<void>){
@@ -46,8 +65,10 @@ export function createLiveService(db:any,request=liveFetch,root:string|null=requ
     running=(async()=>{
       const sources=file?.sources||[{id:'iptv-org',name:'IPTV-org',playlistUrl:LIVE_CATALOG,metadataUrl:LIVE_METADATA}];
       const imported=(await Promise.all(sources.map(async source=>{
-        const [list,info]=await Promise.all([request(source.playlistUrl,12*1024*1024),source.metadataUrl?request(source.metadataUrl,16*1024*1024):Promise.resolve(null)]);
-        return buildLiveCatalog(list.body.toString('utf8'),info?JSON.parse(info.body.toString('utf8')):[]);
+        try{
+          const [list,info]=await Promise.all([request(source.playlistUrl,12*1024*1024),source.metadataUrl?request(source.metadataUrl,16*1024*1024):Promise.resolve(null)]);
+          return buildLiveCatalog(list.body.toString('utf8'),info?JSON.parse(info.body.toString('utf8')):[]);
+        }catch(cause:any){throw Object.assign(Error(`订阅源「${source.name}」拉取失败：${syncFailureReason(cause)}`),{cause});}
       }))).flat();
       if(!imported.length)throw Error('目录为空，保留原频道');
       const merged=new Map<string,(typeof imported)[number]>();
@@ -81,10 +102,10 @@ export function createLiveService(db:any,request=liveFetch,root:string|null=requ
         await tx.setting.upsert({where:{key:stateKey},create:{key:stateKey,value},update:{value}});
         await tx.adminLog.create({data:{userId:actorId||null,action:'live.sync',detail:JSON.stringify({imported:rows.length,provider:'iptv-org'})}});
       },{timeout:180000,maxWait:10000});
-    })().then(()=>{phase='idle';}).catch(()=>{error='更新失败，原有频道和上下架设置已保留，请稍后重试';phase='error';}).finally(()=>{running=null;});
+    })().then(()=>{phase='idle';}).catch((cause:any)=>{error=`更新失败：${syncFailureReason(cause)}；原有频道和上下架设置已保留`;phase='error';}).finally(()=>{running=null;});
     return {ok:true};
   }
-  async function status(){await ready;return {...await state(),...file?{autoUpdate:file.autoUpdate,lastUpdatedAt:file.lastUpdatedAt}:fileError?{autoUpdate:false}:{},phase:fileError?'error':phase,error:fileError||error,fileError:!!fileError,busy:!!running,provider:file?.sources.map(source=>source.name).join('、')||'IPTV-org',fileConfigured:!!file,total:await db.liveChannel.count(),published:await db.liveChannel.count({where:{enabled:true,available:true}})};}
+  async function status(){await ready;return {...await state(),...file?{autoUpdate:file.autoUpdate,lastUpdatedAt:file.lastUpdatedAt}:fileError?{autoUpdate:false}:{},phase:fileError?'error':phase,error:fileError||error,fileError:!!fileError,...fileIssues.skipped?{fileIssues}:{},busy:!!running,provider:file?.sources.map(source=>source.name).join('、')||'IPTV-org',fileConfigured:!!file,total:await db.liveChannel.count(),published:await db.liveChannel.count({where:{enabled:true,available:true}})};}
   async function scheduled(){await ready;if(fileError)return;const config=file||await state();if(running||!config.lastUpdatedAt||config.autoUpdate===false||Date.now()-Date.parse(config.lastUpdatedAt)<86400000)return;await sync();}
   async function updateSubscription(autoUpdate:boolean){await ready;ensureFile();if(running||modifying)throw Object.assign(Error('直播目录正在更新'),{status:409});
     modifying=true;try{if(file){const next={...file,autoUpdate};await updateFile(next,async()=>{const value=JSON.stringify({autoUpdate,lastUpdatedAt:next.lastUpdatedAt,imported:next.channels.length});await db.setting.upsert({where:{key:stateKey},create:{key:stateKey,value},update:{value}});});}

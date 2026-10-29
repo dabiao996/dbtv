@@ -6,7 +6,7 @@ import {matchingEpisode} from '../playback';
 import {RatingBadge} from '../ratings';
 import {shouldOpenPreviewDetails} from './preview-navigation';
 
-export type CinemaVideo={id:string;sourceKey:string;sourceName?:string;title:string;cover?:string;year?:number;category?:string;area?:string;language?:string;desc?:string;episodes?:any[];variants?:{sourceKey:string;sourceName:string}[]};
+export type CinemaVideo={id:string;sourceKey:string;sourceName?:string;title:string;cover?:string;year?:number;category?:string;area?:string;language?:string;desc?:string;episodes?:any[];variants?:{sourceKey:string;sourceName:string}[];uploader?:{name:string;avatarUrl?:string|null}};
 const base=import.meta.env.VITE_API_URL||'';
 export async function cinemaRequest<T>(path:string,signal?:AbortSignal,options?:RequestInit):Promise<T>{const r=await fetch(base+'/api'+path,{credentials:'include',signal,...options});const body=await r.json();if(!r.ok)throw new Error(body.error||'暂时无法读取内容');return body;}
 function plainText(value:string){return value.replace(/<[^>]*>/g,'').replace(/&nbsp;/g,' ').replace(/&amp;/g,'&').trim();}

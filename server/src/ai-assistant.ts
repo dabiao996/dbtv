@@ -14,6 +14,14 @@ export function cleanAiQueries(value:unknown):string[]{
   return [...new Set(value.filter((item):item is string=>typeof item==='string').map(item=>item.trim().slice(0,60)).filter(item=>item.length>=2&&!/[\r\n]/.test(item)))].slice(0,3);
 }
 type AiConfig={key:string;model:string};
+export const DEFAULT_AI_MODEL='gpt-6.1-sol';
+// Keys are no longer pinned to one vendor's "sk-" shape: relay/gateway and
+// self-hosted compatible endpoints issue keys in other formats. Require a
+// plausible secret (bounded length, no whitespace/control characters).
+export const validAiKey=(value:unknown)=>typeof value==='string'&&value.trim().length>=10&&value.trim().length<=512&&!/[\s\x00-\x1f\x7f]/.test(value.trim());
+// Model ids vary by provider ("gpt-…", "openai/gpt-…", "vendor:model"), so
+// accept the common charset instead of one hardcoded model name.
+export const validAiModel=(value:unknown)=>typeof value==='string'&&/^[\w.\-/:]{1,100}$/.test(value.trim());
 export function createAiAssistant(deps:{searchRows:(user:any,q:string)=>Promise<SearchVideo[]>;getPreferences:(id:number)=>Promise<{genres:string[];type:string}>;loadConfig?:()=>Promise<AiConfig>},request:typeof fetch=fetch,env:NodeJS.ProcessEnv=process.env){
   const config=deps.loadConfig||(async()=>({key:String(env.DBTV_AI_API_KEY||'').trim(),model:String(env.DBTV_AI_MODEL||'').trim()}));
   const configured=async()=>{const c=await config();return Boolean(c.key&&c.model)};
@@ -41,11 +49,11 @@ export function createAiAssistant(deps:{searchRows:(user:any,q:string)=>Promise<
   return {configured,ask};
 }
 export function registerAiAssistant(app:Express,db:any,deps:{requireUser:(req:any,res:any)=>Promise<any>;requireAdmin:(req:any,res:any)=>Promise<any>;searchRows:(user:any,q:string)=>Promise<SearchVideo[]>;getPreferences:(id:number)=>Promise<{genres:string[];type:string}>},request:typeof fetch=fetch,env:NodeJS.ProcessEnv=process.env){
-  const loadConfig=async():Promise<AiConfig>=>{const rows=await db.setting.findMany({where:{key:{in:['ai:key','ai:model']}}});const settings=Object.fromEntries(rows.map((row:any)=>[row.key,row.value]));return {key:String(env.DBTV_AI_API_KEY||settings['ai:key']||'').trim(),model:String(env.DBTV_AI_MODEL||settings['ai:model']||'').trim()}};
+  const loadConfig=async():Promise<AiConfig>=>{const rows=await db.setting.findMany({where:{key:{in:['ai:key','ai:model']}}});const settings=Object.fromEntries(rows.map((row:any)=>[row.key,row.value]));return {key:String(env.DBTV_AI_API_KEY||settings['ai:key']||'').trim(),model:String(env.DBTV_AI_MODEL||settings['ai:model']||DEFAULT_AI_MODEL).trim()}};
   const assistant=createAiAssistant({...deps,loadConfig},request,env),limits=new Map<number,{at:number;count:number}>(),daily=new Map<number,{day:string;count:number}>();let globalDay='',globalCount=0;
   app.get('/api/ai/status',async(req,res)=>{const user=await deps.requireUser(req,res);if(user)res.json({configured:await assistant.configured()})});
-  app.get('/api/admin/ai',async(req,res)=>{if(!await deps.requireAdmin(req,res))return;const c=await loadConfig();res.json({configured:!!c.key&&!!c.model,model:c.model||'gpt-6.1-sol',credentialSource:env.DBTV_AI_API_KEY?'environment':'database'})});
-  app.put('/api/admin/ai',async(req,res)=>{if(!await deps.requireAdmin(req,res))return;const key=typeof req.body?.key==='string'?req.body.key.trim():'';if(env.DBTV_AI_API_KEY)return res.status(409).json({error:'AI 密钥由服务器环境管理'});if(!/^sk-[A-Za-z0-9_-]{20,500}$/.test(key)||req.body?.model!=='gpt-6.1-sol')return res.status(400).json({error:'密钥格式或模型无效'});await db.setting.upsert({where:{key:'ai:key'},create:{key:'ai:key',value:key},update:{value:key}});await db.setting.upsert({where:{key:'ai:model'},create:{key:'ai:model',value:'gpt-6.1-sol'},update:{value:'gpt-6.1-sol'}});res.json({configured:true,model:'gpt-6.1-sol'})});
+  app.get('/api/admin/ai',async(req,res)=>{if(!await deps.requireAdmin(req,res))return;const c=await loadConfig();res.json({configured:!!c.key&&!!c.model,model:c.model||DEFAULT_AI_MODEL,credentialSource:env.DBTV_AI_API_KEY?'environment':'database'})});
+  app.put('/api/admin/ai',async(req,res)=>{if(!await deps.requireAdmin(req,res))return;if(env.DBTV_AI_API_KEY)return res.status(409).json({error:'AI 密钥由服务器环境管理'});const model=typeof req.body?.model==='string'&&req.body.model.trim()?req.body.model.trim():DEFAULT_AI_MODEL;if(!validAiModel(model))return res.status(400).json({error:'模型名无效：只允许字母、数字、点、短横线、下划线、斜杠和冒号，长度 1–100'});let key=typeof req.body?.key==='string'?req.body.key.trim():'';if(!key){const stored=await db.setting.findUnique({where:{key:'ai:key'}});key=String(stored?.value||'').trim();if(!key)return res.status(400).json({error:'请先填写密钥'});}if(!validAiKey(key))return res.status(400).json({error:'密钥无效：需要 10–512 个字符且不能包含空白'});await db.setting.upsert({where:{key:'ai:key'},create:{key:'ai:key',value:key},update:{value:key}});await db.setting.upsert({where:{key:'ai:model'},create:{key:'ai:model',value:model},update:{value:model}});res.json({configured:true,model})});
   app.post('/api/ai/chat',async(req,res)=>{
     const user=await deps.requireUser(req,res);if(!user)return;
     const mode=req.body?.mode;
