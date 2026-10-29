@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
 import {createInterface} from 'node:readline/promises';
 import {randomUUID,createHash} from 'node:crypto';
-import {APP,DEFAULT_PORT,portNumber,origin,available,choosePort,question,privateDirectory,atomic,secureCopy,backupLiveCatalog,read,save,environment,writeEnvironment,addresses,health,redact,compose,systemdUnit} from './tv/core.mjs';
+import {APP,DEFAULT_PORT,portNumber,origin,available,choosePort,question,privateDirectory,atomic,secureCopy,backupLiveCatalog,read,save,environment,writeEnvironment,addresses,health,redact,compose,systemdUnit,validateManagementHome} from './tv/core.mjs';
 import releases from './releases.cjs';
 import * as updates from './tv/updates.mjs';
 import {createDriver} from './tv/update-driver.mjs';
@@ -195,7 +195,7 @@ async function main() {
   const command=process.argv[2]||'menu',opts=options(process.argv.slice(3));
   const termux=!!process.env.PREFIX?.includes('com.termux');
   const home=path.resolve(opts.home||process.env.DBTV_HOME||(termux?path.join(os.homedir(),'.local/share/dabiao-tv'):'/opt/dabiao-tv'));
-  if(/[:\r\n\0]/.test(home)||['/','/opt','/usr','/var','/var/lib','/home','/root','/tmp',os.homedir()].includes(home)||home===path.resolve(path.dirname(entry),'..')&&fs.existsSync(path.join(home,'package.json')))throw Error('请使用专用管理目录，不得使用源码根目录、系统根目录或整个用户目录');
+  const serviceState=validateManagementHome(home,{command,entry,termux});
   let rl;
   const ask=async text=>{
     if(opts.yes||!process.stdin.isTTY)throw Error('非交互执行必须提供完整参数，例如 --port 8787 --origin https://tv.example.com');
@@ -220,7 +220,7 @@ async function main() {
         if(action)execute(process.execPath,[entry,action,'--home',home],{allowFailure:true});
       }
     }
-    if(command==='serve'){await serve(home,read(process.getuid?.()===0||termux?home:path.join(home,'data')));return;}
+    if(command==='serve'){await serve(home,serviceState||read(process.getuid?.()===0||termux?home:path.join(home,'data')));return;}
     if(command==='check-update'){
       const state=read(home),key=releases.publicKey(state.source),remote=await releases.release({key});
       console.log(JSON.stringify({current:state.release||releases.current(state.source),latest:remote.manifest.version,url:remote.url,notes:remote.notes}));return;

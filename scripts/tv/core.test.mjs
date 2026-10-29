@@ -59,9 +59,12 @@ test('Docker host port differs from fixed container port and binds locally by de
   const state={source:'/opt/dbtv/app',port:9911,bind:'127.0.0.1'},value=JSON.parse(compose('/opt/dbtv',state)).services['dabiao-tv'];
   assert.deepEqual(value.ports,['127.0.0.1:9911:8787']);assert.deepEqual(value.volumes,['/opt/dbtv/data:/app/data']);assert.equal(value.environment.PORT,'8787');
 });
-test('systemd uses dedicated account, quotes paths and escapes specifiers',()=>{
+test('systemd uses scalar working directory, quoted command arguments and escaped specifiers',()=>{
   const value=systemdUnit('/opt/test %n',{source:'/opt/test %n/app',node:'/opt/test %n/node'});
   assert.match(value,/User=dabiaotv/);assert.match(value,/%\%n/);assert.match(value,/NoNewPrivileges=true/);assert.match(value,/UMask=0077/);
+  assert.match(value,/^WorkingDirectory=\/opt\/test %%n\/app$/m);
+  assert.match(value,/^ExecStart="\/opt\/test %%n\/node" "\/opt\/test %%n\/app\/scripts\/tv\.mjs" serve --home "\/opt\/test %%n"$/m);
+  for(const source of ['relative/path','/tmp/injected\nUser=root','/tmp/carriage\rreturn','/tmp/tab\tpath'])assert.throws(()=>systemdUnit('/opt/test',{source,node:'/usr/bin/node'}),/绝对路径/);
 });
 test('health does not equate process/HTTP status with database health',async()=>{
   const state={port:8787};

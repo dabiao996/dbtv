@@ -235,6 +235,24 @@ export function read(home) {
   portNumber(state.port);origin(state.origin);
   return state;
 }
+// Installation must never adopt a whole user home. The dedicated native service
+// account is different: useradd intentionally sets its HOME to the managed root.
+// Permit only its already-configured, non-root serve path; never management work.
+export function validateManagementHome(home,{command,entry,termux=false,userHome=os.homedir(),uid=process.getuid?.()}) {
+  const invalid=()=>{throw Error('请使用专用管理目录，不得使用源码根目录、系统根目录或整个用户目录');};
+  if(/[:\r\n\0]/.test(home)||['/','/opt','/usr','/var','/var/lib','/home','/root','/tmp'].includes(home)||home===path.resolve(path.dirname(entry),'..')&&fs.existsSync(path.join(home,'package.json')))invalid();
+  if(home!==path.resolve(userHome))return;
+  if(command!=='serve'||termux||!Number.isInteger(uid)||uid<=0)invalid();
+  if(fs.lstatSync(home).isSymbolicLink()||fs.lstatSync(path.join(home,'data')).isSymbolicLink())invalid();
+  const marker=path.join(home,'app','.dbtv-source');
+  if(!fs.existsSync(marker)||fs.lstatSync(marker).isSymbolicLink()||!fs.statSync(marker).isFile()||fs.readFileSync(marker,'utf8').trim()!=='managed source copy')invalid();
+  const state=read(path.join(home,'data'));
+  const source=path.resolve(state.source),app=path.join(home,'app'),releaseRoot=path.join(home,'releases');
+  if(state.mode!=='native'||state.source!==source||state.node!==path.join(home,'tools/node/bin/node')||!(source===app||source.startsWith(releaseRoot+path.sep)&&source.endsWith(path.sep+'app')))invalid();
+  if(![path.join(app,'scripts/tv.mjs'),path.join(source,'scripts/tv.mjs')].includes(path.resolve(entry)))invalid();
+  return state;
+}
+
 export function environment(home,state) {
   const data=state.mode==='docker'?'/app/data':path.join(home,'data');
   return {NODE_ENV:'production',HOST:state.bind,PORT:String(state.mode==='docker'?8787:state.port),DATABASE_PROVIDER:'sqlite',DATABASE_URL:`file:${data}/dabiao.db`,DBTV_DATA_DIR:data,NPM_CONFIG_CACHE:`${data}/npm-cache`,APP_ORIGIN:state.origin||'',COOKIE_SECURE:String(state.origin?.startsWith('https://')||false),INSTALL_TOKEN:'',INSTALL_TOKEN_LOG:'false'};
@@ -272,6 +290,13 @@ export function compose(home,state) {
   return JSON.stringify({services:{'dabiao-tv':{...state.image?{image:state.image}:{build:{context:state.source}},restart:'unless-stopped',env_file:[path.join(home,'app.env')],environment:{HOST:'0.0.0.0',PORT:'8787',DBTV_DATA_DIR:'/app/data'},ports:[`${state.bind}:${state.port}:8787`],volumes:[`${path.join(home,'data')}:/app/data`],logging:{driver:'local',options:{'max-size':'5m','max-file':'2'}}}}},null,2);
 }
 export function systemdUnit(home,state,user='dabiaotv') {
+  for(const value of [home,state.source,state.node]){
+    if(typeof value!=='string'||!path.isAbsolute(value)||/[\x00-\x1f\x7f]/.test(value))throw Error('systemd 路径必须为不含控制字符的绝对路径');
+  }
+  // WorkingDirectory is a scalar path, not an ExecStart argument list. Outer
+  // quotes become literal path characters and make it fail the absolute-path
+  // check. Spaces remain literal here; only systemd specifiers need escaping.
+  const directory=state.source.replaceAll('%','%%');
   const quote=value=>`"${value.replaceAll('\\','\\\\').replaceAll('"','\\"').replaceAll('%','%%')}"`;
-  return `[Unit]\nDescription=大彪TV\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${user}\nWorkingDirectory=${quote(state.source)}\nExecStart=${quote(state.node)} ${quote(path.join(state.source,'scripts/tv.mjs'))} serve --home ${quote(home)}\nRestart=on-failure\nRestartSec=5\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=multi-user.target\n`;
+  return `[Unit]\nDescription=大彪TV\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=${user}\nWorkingDirectory=${directory}\nExecStart=${quote(state.node)} ${quote(path.join(state.source,'scripts/tv.mjs'))} serve --home ${quote(home)}\nRestart=on-failure\nRestartSec=5\nUMask=0077\nNoNewPrivileges=true\nPrivateTmp=true\n\n[Install]\nWantedBy=multi-user.target\n`;
 }

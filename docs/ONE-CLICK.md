@@ -35,6 +35,32 @@ bash scripts/install.sh
 
 开发者可用 `npm run test:production-build` 在临时源码副本验证真实生产环境依赖安装与完整构建；不会启动系统服务，也不会读取现有站点的 .env 或数据库。此测试需要下载 npm/Prisma 依赖，不属于无需网络和应用依赖的 test:deploy。
 
+## systemd 服务文件诊断
+
+若构建成功但启动报告 `Unit has a bad unit file setting`，先只读检查：
+
+```sh
+sudo systemctl show dabiao-tv-managed.service -p LoadState -p LoadError -p FragmentPath -p DropInPaths
+sudo systemctl cat dabiao-tv-managed.service
+sudo systemd-analyze verify /etc/systemd/system/dabiao-tv-managed.service
+```
+
+旧生成器会错误写成 `WorkingDirectory="/opt/dabiao-tv/app"`。systemd 的此字段是单个路径而非命令参数列表，外围双引号会成为路径内容，导致“不为绝对路径”。正确形式是 `WorkingDirectory=/opt/dabiao-tv/app`；空格直接保留，路径中的百分号写成 `%%`。`ExecStart` 不同，仍必须保留各参数的引号和转义，不能全局删除服务文件里的引号。
+
+修复生成器只影响以后新建的服务文件；已有 `/etc/systemd/system/dabiao-tv-managed.service` 不会因为拉取新源码而自动重写，更新和回退也复用该服务。恢复时先核对文件带有 `# Managed by dbtv`、实际来源与路径及 drop-in，再仅更正错误的 WorkingDirectory 行。将候选文件放到独立临时 `.service` 文件，先用 `systemd-analyze verify` 验证，通过后才以 root:root、0644 写回原服务文件，执行 `systemctl daemon-reload`，再启动并查看状态。不要重装、删除部署状态或数据来绕过已有服务检查，也不要不经核对覆盖自定义 unit/drop-in。
+
+校验不启动服务、不修改数据库；真正启动服务则会执行应用正常初始化/数据库准备流程。完整服务启动与 HTTP/数据库健康检查仍须在目标 Ubuntu 环境核实。
+
+## 专用服务账号的 HOME
+
+原生安装将 `dabiaotv` 的账户 HOME 设置为专用管理目录（默认 `/opt/dabiao-tv`）。systemd 以该账号启动时，`os.homedir()` 因而也等于管理目录；这不是用户把源码目录选错。旧管理器把“禁止采用整个用户目录”的安装保护无条件应用到 `serve`，会导致服务反复退出并报告“请使用专用管理目录”。
+
+保护规则仍禁止安装、更新等管理操作采用整个用户目录，也始终禁止系统根目录和源码根目录。仅对非 root 的 `serve`，在已有私有部署配置、native 模式、管理源码标记、固定私有 Node 路径、管理目录内源码/发行目录和匹配的服务入口均核实后，允许专用服务账号 HOME 与管理目录相同。新装本身不会因此放宽。
+
+只读诊断可用 `getent passwd dabiaotv` 核对 HOME，并运行 `sudo runuser -u dabiaotv -- /opt/dabiao-tv/tools/node/bin/node -p 'require("node:os").homedir()'`；不需要更改账号 HOME、删除部署配置或伪造环境变量绕过检查。
+
+已有服务恢复时应核对实际 ExecStart 指向的管理器，将修复版本的 `scripts/tv.mjs` 和 `scripts/tv/core.mjs` 一并更新到运行副本，再重启服务并检查管理状态和 HTTP/数据库健康。不要仅改源码仓库却遗漏 `/opt/dabiao-tv/app` 的运行副本；如果 WorkingDirectory 尚未修复，还须按上一节核验生成的 unit。上述恢复不重装、不删除数据库，也不自动覆盖自定义配置。
+
 ## 端口和冲突
 
 - 每次新安装询问端口，回车使用 **8787**；允许1024–65535，避免低端口需要应用特权。
