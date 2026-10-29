@@ -35,7 +35,7 @@ test('ratings persist across restarts, deduplicate work and keep credentials ser
   assert.equal(calls,1);assert.equal(results[0].rating?.score,8.1);
   assert.equal(JSON.stringify(await service.status()).includes('test-secret'),false);
   const fresh=createRatingService(db,request,{});await fresh.lookup(film);assert.equal(calls,1);
-  assert.deepEqual(publicSettingsRows([{key:'siteName',value:'TV'},{key:'rating:token',value:'test-secret'},{key:'rating:cache:abc',value:'private'}]),[{key:'siteName',value:'TV'}]);
+  assert.deepEqual(publicSettingsRows([{key:'siteName',value:'TV'},{key:'rating:token',value:'test-secret'},{key:'rating:cache:abc',value:'private'},{key:'ai:key',value:'private'}]),[{key:'siteName',value:'TV'}]);
   await service.save({enabled:true,token:''});assert.equal((await service.status()).configured,true);
   await service.save({enabled:true,clearToken:true});assert.equal((await service.status()).configured,false);
 });
