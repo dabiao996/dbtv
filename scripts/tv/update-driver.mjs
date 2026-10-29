@@ -1,3 +1,4 @@
+import {buildDependencyArgs} from './build.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -45,7 +46,7 @@ export function createDriver(home,adapter){
         const next={...state,source};
         fs.chmodSync(path.join(home,'releases'),0o755);fs.chmodSync(directory,0o755);
         if(state.mode==='native')adapter.execute('chown',['-R','dabiaotv:dabiaotv',directory]);
-        adapter.application(home,next,next.node,[adapter.npmPath(next),'ci','--ignore-scripts','--no-audit','--no-fund']);
+        adapter.application(home,next,next.node,[adapter.npmPath(next),...buildDependencyArgs()]);
         adapter.application(home,next,next.node,[adapter.npmPath(next),'run','build']);
         if(releases.current(source).dataContract!==manifest.dataContract||releases.dataContract(source)!==manifest.dataContract)throw Error('构建期间源码发生变化，拒绝切换版本');
         adapter.application(home,next,next.node,[adapter.npmPath(next),'cache','clean','--force']);

@@ -10,6 +10,7 @@ import {APP,DEFAULT_PORT,portNumber,origin,available,choosePort,question,private
 import releases from './releases.cjs';
 import * as updates from './tv/updates.mjs';
 import {createDriver} from './tv/update-driver.mjs';
+import {buildDependencyArgs} from './tv/build.mjs';
 
 const entry=fileURLToPath(import.meta.url);
 const say=message=>process.stderr.write(`${message}\n`);
@@ -266,7 +267,7 @@ async function main() {
       }
       if(mode==='docker')docker(home,['build']);
       else {
-        application(home,state,state.node,[npmPath(state),'ci','--ignore-scripts','--no-audit','--no-fund']);
+        application(home,state,state.node,[npmPath(state),...buildDependencyArgs()]);
         application(home,state,state.node,[npmPath(state),'run','build']);
         application(home,state,state.node,[npmPath(state),'cache','clean','--force']);
       }

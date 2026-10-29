@@ -23,6 +23,18 @@ bash scripts/install.sh
 
 本地修改尚未发布到GitHub时，不存在可声称已上线的一行远程安装命令。发布后也应下载完整源码/可信发布包，核对发布的校验值，再执行；不推荐未经核验直接执行网络脚本。独立下载的入口支持从固定 `dabiao996/dbtv` main下载源码，但Git分支的HTTPS下载**不等于签名发布验证**，应审阅后执行。
 
+## 原生构建依赖与失败后重试
+
+应用运行环境保持 `NODE_ENV=production`，但从源码构建需要开发依赖（TypeScript、Vite、`@types/node`、`@types/express` 等）。新装和更新构建统一使用 `npm ci --include=dev --ignore-scripts --no-audit --no-fund`；显式 `--include=dev` 可覆盖生产环境或 npm 的 omit=dev 设置。随后 `npm run build` 会主动生成 Prisma 默认客户端和三种安装驱动，再编译服务端与前端；不依赖安装钩子。
+
+旧入口遗漏构建依赖时，可能出现大量 `Cannot find name process`、`Cannot find namespace NodeJS`、`Could not find a declaration file for module express` 错误，最后显示 `runuser（2）`。这表示下层 TypeScript 构建返回 2，不等于 runuser 权限错误。不能用关闭类型检查、添加任意 any 声明或清空数据库处理。
+
+**保留失败现场：** 安装脚本发现已有 `.dbtv-source` 的 app 目录会保留该源码。因此仅重新下载最外层 install.sh，不会自动覆盖失败目录中的旧管理脚本；单独补装依赖后再运行旧入口也会被旧的 npm ci 再次移除。
+
+已失败的新装应先核对目标是自己的专用管理目录、`app/.dbtv-source` 存在且没有 `deployment.json`（已有部署不适用此恢复流程），备份现有配置与待更换文件。在确认源码版本和本地修改后，只把修复版本的 `scripts/tv.mjs`、`scripts/tv/update-driver.mjs`、`scripts/tv/build.mjs` 更新到管理目录的 app 下对应位置，再重试原来的安装命令。不要删除管理目录、data、app.env、安装锁、数据库或已有账号，也不要覆盖用户自行改过的源码。已有部署或独立更新代理需要另行核对其实际运行的管理器副本，不能把新装重试当作更新步骤。
+
+开发者可用 `npm run test:production-build` 在临时源码副本验证真实生产环境依赖安装与完整构建；不会启动系统服务，也不会读取现有站点的 .env 或数据库。此测试需要下载 npm/Prisma 依赖，不属于无需网络和应用依赖的 test:deploy。
+
 ## 端口和冲突
 
 - 每次新安装询问端口，回车使用 **8787**；允许1024–65535，避免低端口需要应用特权。
