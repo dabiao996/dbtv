@@ -1,5 +1,6 @@
 import express from 'express'; import cors from 'cors'; import path from 'node:path'; import {existsSync,readFileSync} from 'node:fs'; import {randomBytes,scryptSync,timingSafeEqual} from 'node:crypto';
 import {registerBrowse,xmlCategories,matchesFilters} from './browse.js';
+import {registerSourceConfigImport} from './source-config.js';
 import {createContentPolicy,registerContentPolicy} from './content-policy.js';
 import {registerDiscover} from './discover.js';
 import {registerSearch} from './search.js';
@@ -20,7 +21,11 @@ import {cleanVideoCover,cleanVideoTitle,resolveVideoMeta} from './video-meta.js'
 const releaseInfo=require('../../scripts/releases.cjs').current();
 const databaseTools=require('../../scripts/database-config.cjs');
 const databaseConfig=databaseTools.applyDatabaseEnvironment();
-const app=express(); app.disable('x-powered-by'); app.use(cors({origin:true,credentials:true})); app.use(express.json({limit:'2mb'}));
+const app=express(); app.disable('x-powered-by'); app.use(cors({origin:true,credentials:true}));
+// An encoded JSON string may occupy up to six times its UTF-8 file size.
+app.use('/api/config/import-json',express.json({limit:'7mb'}));
+app.use('/api/config/import-json',(error:any,_req:any,res:any,next:any)=>{if(error?.type==='entity.too.large')return res.status(413).json({error:'配置文件不能超过 1 MiB'});if(error instanceof SyntaxError)return res.status(400).json({error:'导入请求 JSON 格式无效'});next(error)});
+app.use(express.json({limit:'2mb'}));
 const hashPassword=(password:string,salt=randomBytes(16).toString('hex'))=>`${salt}:${scryptSync(password,salt,64).toString('hex')}`; const checkPassword=(password:string,stored:string)=>{if(password.length>128)return false;const [salt,hash]=stored.split(':');if(!salt||!hash||!/^[a-f0-9]{128}$/.test(hash))return false;const actual=scryptSync(password,salt,64);return timingSafeEqual(actual,Buffer.from(hash,'hex'))};
 const DEFAULT_SETTINGS={siteName:'大彪TV',logoUrl:'/images/dabiao-logo.svg',faviconUrl:'/images/dabiao-icon.svg',accentColor:'#E50914',themePreset:'netflix',heroEnabled:'true',noticeEnabled:'true'};
 const installation=createInstallation(databaseConfig,{hashPassword,settings:DEFAULT_SETTINGS});
@@ -131,6 +136,7 @@ app.post('/api/auth/login',async(req,r)=>{const username=String(req.body?.userna
 app.post('/api/auth/logout',async(req,r)=>{const token=String(req.headers.cookie||'').split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith('webtv_session='))?.split('=')[1];if(token)await db.session.deleteMany({where:{token}});r.setHeader('Set-Cookie','webtv_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');r.json({ok:true})});
 app.get('/api/access',async(req,r)=>{const u=await requireUser(req,r);if(u)r.json({...membership.summary(u),pageAccess:u.permissions})});
 void installation.ready.then(async()=>{if(installation.installed&&installation.available)await Promise.all(Object.entries(DEFAULT_SETTINGS).map(([key,value])=>db.setting.upsert({where:{key},update:{},create:{key,value}})));}).catch(()=>console.error('默认设置初始化失败，请检查数据库权限'));
+registerSourceConfigImport(app,db,{requireAdmin,invalidate:()=>responseCache.clear()});
 app.get('/api/config',async(_,r)=>{const [s,setting]=await Promise.all([db.source.findMany({select:{key:true,name:true,type:true,api:true,enabled:true,searchable:true,quickSearch:true,filterable:true}}),db.setting.findUnique({where:{key:'siteName'}})]); r.json({name:setting?.value||'大彪TV',sites:s});});
 app.use('/api/config',async(req:any,res:any,next:any)=>{if(req.method==='POST'&&await requireAdmin(req,res))next();else if(req.method==='GET')next()});
 app.post('/api/config',async(req,r)=>{try{const raw=String(req.body.rawConfig||'').replace(/^\uFEFF/,'').trim();const c=JSON.parse(raw);if(!Array.isArray(c.sites))return r.status(400).json({error:'配置必须包含 sites 数组'});const valid=c.sites.filter((x:any)=>x.key&&x.name);const keys=valid.map((x:any)=>String(x.key));await db.$transaction(async tx=>{await tx.source.deleteMany({where:{key:{notIn:keys}}});for(const x of valid){const type=typeof x.type==='number'?'tvbox-json':(x.type==='local'?'local':'tvbox-json');const flags={searchable:Boolean(Number(x.searchable??1)),quickSearch:Boolean(Number(x.quickSearch??1)),filterable:Boolean(Number(x.filterable??1))};await tx.source.upsert({where:{key:String(x.key)},update:{name:String(x.name),type,api:String(x.api||x.key),rawConfig:raw,...flags},create:{key:String(x.key),name:String(x.name),type,api:String(x.api||x.key),rawConfig:raw,...flags}})}await tx.setting.upsert({where:{key:'siteName'},update:{value:String(c.name||'大彪TV')},create:{key:'siteName',value:String(c.name||'大彪TV')}})});responseCache.clear();r.json({ok:true,sites:valid.length})}catch{r.status(400).json({error:'JSON 格式无效或配置内容不完整'})}});

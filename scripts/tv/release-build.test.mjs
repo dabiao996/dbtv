@@ -28,11 +28,13 @@ test('actual release tooling stamps, filters a git source archive and verifies i
   fs.mkdirSync(path.join(root,'data'));
   fs.writeFileSync(path.join(root,'.env'),'private-password');fs.writeFileSync(path.join(root,'prisma/private.sqlite'),'private-db');fs.writeFileSync(path.join(root,'scripts/secret.pem'),'private-key');
   fs.writeFileSync(path.join(root,'data/live-tv.json'),'private-channel');fs.writeFileSync(path.join(root,'live-tv.example.json'),'{}');
+  fs.writeFileSync(path.join(root,'tvbox.json'),'{"sites":[]}');
   execFileSync('git',['init','--quiet'],{cwd:root});execFileSync('git',['add','.'],{cwd:root});
   execFileSync(process.execPath,[script,'prepare'],{cwd:root,env});const metadata=JSON.parse(fs.readFileSync(path.join(root,'release.json')));assert.equal(metadata.channel,'stable');assert.match(metadata.dataContract,/^[a-f0-9]{64}$/);
   execFileSync(process.execPath,[script,'archive'],{cwd:root,env});
   const archive=path.join(root,'release-artifacts/dbtv-source.tar.gz'),names=execFileSync('tar',['-tzf',archive],{encoding:'utf8'});
-  assert.ok(names.includes('deploy/update-public.pem'));assert.ok(names.includes('live-tv.example.json'));
+  assert.ok(names.includes('deploy/update-public.pem'));assert.ok(names.includes('live-tv.example.json'));assert.ok(names.split('\n').includes('tvbox.json'));
+  assert.equal(execFileSync('tar',['-xOzf',archive,'tvbox.json'],{encoding:'utf8'}),'{"sites":[]}');
   for(const secret of ['.env\n','private.sqlite','secret.pem','data/live-tv.json','._'])assert.ok(!names.includes(secret));
   execFileSync(process.execPath,[script,'sign'],{cwd:root,env:{...env,IMAGE_DIGEST:'sha256:'+'c'.repeat(64)}});
   const bytes=fs.readFileSync(path.join(root,'release-artifacts/release-manifest.json')),sig=fs.readFileSync(path.join(root,'release-artifacts/release-manifest.sig'),'utf8');assert.equal(releases.verifyManifest(bytes,sig,keys.publicKey).version,'0.2.0');

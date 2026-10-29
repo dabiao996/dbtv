@@ -8,7 +8,7 @@ if(fs.existsSync(destination)) {
   console.error('保留之前下载的源码；不覆盖安装失败现场。');
 } else {
   fs.mkdirSync(destination,{recursive:true,mode:0o755});
-  for(const name of ['package.json','package-lock.json','release.json','.env.example','.dockerignore','Dockerfile','compose.yaml','client','server','prisma','scripts','deploy','docs','README.md']) {
+  for(const name of ['package.json','package-lock.json','release.json','.env.example','.dockerignore','Dockerfile','compose.yaml','client','server','prisma','scripts','deploy','docs','README.md','tvbox.json']) {
     if(!fs.existsSync(path.join(source,name)))continue;
     fs.cpSync(path.join(source,name),path.join(destination,name),{recursive:true,filter:file=>{
       const part=path.basename(file);

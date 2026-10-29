@@ -20,7 +20,7 @@ if(['stamp','prepare'].includes(command)){
   if(command==='prepare'&&process.env.GITHUB_OUTPUT)fs.appendFileSync(process.env.GITHUB_OUTPUT,`version=${pkg.version}\ncontract=${metadata.dataContract}\n`);
 }else if(command==='archive'){
   const result=spawnSync('git',['ls-files','-z'],{encoding:'utf8'});if(result.status!==0)throw Error('无法枚举正式源码');
-  const allowed=new Set(['client','server','prisma','scripts','deploy','docs','README.md','CHANGELOG.md','Dockerfile','compose.yaml','package.json','package-lock.json','release.json','live-tv.example.json','.env.example','.dockerignore','tsconfig.json']);
+  const allowed=new Set(['client','server','prisma','scripts','deploy','docs','README.md','CHANGELOG.md','Dockerfile','compose.yaml','package.json','package-lock.json','release.json','live-tv.example.json','tvbox.json','.env.example','.dockerignore','tsconfig.json']);
   const names=result.stdout.split('\0').filter(Boolean).filter(name=>allowed.has(name.split('/')[0])&&!/(^|\/)(?:node_modules|dist|build|coverage|cache|data|backups|\.generated)(\/|$)|\.(?:db|sqlite3?)(?:-|$)|\.log$|\.(?:pem|key)$/.test(name)||name==='deploy/update-public.pem');
   for(const name of names)if(/[\r\n\x00]/.test(name)||fs.lstatSync(name).isSymbolicLink()||!fs.statSync(name).isFile())throw Error('源码包不允许链接或特殊文件');
   fs.mkdirSync('release-artifacts',{recursive:true});

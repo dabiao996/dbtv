@@ -16,7 +16,7 @@ const env={...process.env};
 // those settings, an external private directory, or Node preload scripts.
 for(const key of Object.keys(env))if(/^(?:DBTV_|DATABASE_|DB_|PRISMA_|INSTALL_TOKEN|NODE_OPTIONS)/i.test(key))delete env[key];
 Object.assign(env,{
-  NODE_ENV:'production',npm_config_omit:'dev',
+  NODE_ENV:'production',npm_config_omit:'dev',npm_config_cache:path.join(temporary,'npm-cache'),
   DATABASE_PROVIDER:'sqlite',DATABASE_URL:`file:${path.join(state,'unused.db')}`,
   DBTV_DATA_DIR:state,DB_AUTO_SYNC:'false',
 });
@@ -33,6 +33,8 @@ try{
   for(const relative of ['node_modules','.generated','data','.env','server/dist','client/dist']){
     assert.equal(fs.existsSync(path.join(root,relative)),false,`fixture must not inherit ${relative}`);
   }
+  file('tvbox.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(root,'tvbox.json'),'utf8')),JSON.parse(fs.readFileSync(path.join(source,'tvbox.json'),'utf8')));
   run(npm,buildDependencyArgs());
   // Catch a production-only install before any generated artifact can hide it.
   for(const relative of ['node_modules/typescript/bin/tsc','node_modules/vite/bin/vite.js',
@@ -52,6 +54,9 @@ try{
   }
   assert.equal(fs.existsSync(path.join(state,'unused.db')),false,'build must not create or migrate a database');
   assert.equal(fs.existsSync(path.join(state,'database.json')),false,'build must not install a database');
+  if(process.argv.includes('--start')){
+    const {testManagedStart}=await import('./test-managed-start.mjs');await testManagedStart(root,env);
+  }
   console.log('\nProduction clean-build regression passed: dev tools, types, server, Vite and four Prisma clients.');
 }finally{
   fs.rmSync(temporary,{recursive:true,force:true});

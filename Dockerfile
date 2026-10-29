@@ -22,6 +22,7 @@ COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/client/dist ./client/dist
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/release.json ./release.json
+COPY --from=build /app/tvbox.json ./tvbox.json
 COPY --from=build /app/deploy ./deploy
 COPY --from=build /app/.generated/install-clients ./.generated/install-clients
 COPY scripts ./scripts

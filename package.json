@@ -6,6 +6,7 @@
     "tv": "node scripts/tv.mjs",
     "test:deploy": "node --test scripts/tv/*.test.mjs",
     "test:production-build": "node scripts/test-production-build.mjs",
+    "test:production-install": "node scripts/test-production-build.mjs --start",
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "DBTV_DEV_WATCH=1 tsx watch server/src/index.ts",
     "dev:client": "vite --config client/vite.config.ts",
