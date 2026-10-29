@@ -22,7 +22,7 @@ export default function CinemaCard({video:summary,progress}:{video:CinemaVideo;p
       {progress!==undefined&&<span className="progress"><i style={{width:`${Math.min(100,Math.max(0,progress))}%`}}/></span>}
     </Link>
     <Link className="cinema-card-title" to={detail} title={video.title}><strong>{video.title}</strong></Link><span className="cinema-card-meta" title={names}>{names}</span>
-    {video.uploader&&<span className="cinema-card-uploader"><img src={video.uploader.avatarUrl||'/images/default-avatar.svg'} alt="" loading="lazy" onError={e=>{e.currentTarget.src='/images/default-avatar.svg'}}/><em>{video.uploader.name}</em> 上传</span>}
+    {video.uploader?.virtual&&<span className="cinema-card-uploader" title="虚拟展示身份，不代表实际上传记录"><img src={video.uploader.avatarUrl||'/images/default-avatar.svg'} referrerPolicy="no-referrer" alt="" loading="lazy" onError={e=>{e.currentTarget.src='/images/default-avatar.svg'}}/><em>{video.uploader.name}</em> · 虚拟展示</span>}
     <span className="cinema-card-rating"><RatingBadge video={video} compact/></span>
     <button className="cinema-card-preview-toggle" aria-label={`预览《${video.title}》`} onClick={e=>{preview.open(video,e.currentTarget,true,e.detail===0)}}><Icon name="info" size={17}/></button>
   </article>;

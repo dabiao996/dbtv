@@ -278,3 +278,30 @@ model Session {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
 }
+
+// Fictional presentation profiles: never accounts and never authentication identities.
+model VirtualUploader {
+  id        String   @id
+  name      String
+  avatarUrl String?
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  attributions VideoAttribution[]
+}
+
+// Stable presentation assignment for local and remote videos; no dependency on a User.
+model VideoAttribution {
+  videoKey   String @id
+  uploaderId String
+  uploader   VirtualUploader @relation(fields: [uploaderId], references: [id], onDelete: Restrict)
+  createdAt  DateTime @default(now())
+  @@index([uploaderId])
+}
+
+// A batch's stable IDs allow a safely replayable explicit generation request.
+model VirtualUploaderBatch {
+  id        String @id
+  count     Int
+  createdAt DateTime @default(now())
+}

@@ -15,6 +15,7 @@ import {createInstallation} from './installation.js';
 import {registerUpdates} from './updates.js';
 import {trustedBrowserOrigin} from './origin.js';
 import {registerLive} from './live.js';
+import {createVirtualUploaderService,registerVirtualUploaders} from './virtual-uploaders.js';
 import {cleanVideoCover,cleanVideoTitle,resolveVideoMeta} from './video-meta.js';
 const releaseInfo=require('../../scripts/releases.cjs').current();
 const databaseTools=require('../../scripts/database-config.cjs');
@@ -34,18 +35,9 @@ const guestIdentity=async(req:any)=>{if('guestUser' in req)return req.guestUser;
 const requireUser=async(req:any,res:any)=>{const user=await currentUser(req)||await guestIdentity(req);if(!user||!user.enabled){res.status(401).json({error:'请先登录'});return null}return user};
 const requireAdmin=async(req:any,res:any)=>{const user=await requireAccount(req,res);if(!user)return null;if(user.role!=='admin'){res.status(403).json({error:'需要管理员权限'});return null}return user};
 const canSource=(user:any,key:string)=>user.role==='admin'||user.sourceAccess.some((x:any)=>x.sourceKey===key);
-// Uploader attribution: source feeds carry no uploader, so each video is
-// deterministically attributed to one of the site's accounts (stable per
-// video id) and rendered as "uploaded by" under the video, community-style.
-let uploaderCache:{at:number;users:any[]}={at:0,users:[]};
-async function uploaderPool(){if(Date.now()-uploaderCache.at<30000)return uploaderCache.users;try{const users=await db.user.findMany({where:{enabled:true},select:{username:true,displayName:true,avatarUrl:true},orderBy:{id:'asc'},take:200});uploaderCache={at:Date.now(),users};}catch{}return uploaderCache.users}
-function pickUploader(users:any[],key:string){if(!users.length)return null;let hash=2166136261;for(let i=0;i<key.length;i++){hash^=key.charCodeAt(i);hash=Math.imul(hash,16777619)}const user=users[(hash>>>0)%users.length];return {name:user.displayName||user.username,avatarUrl:user.avatarUrl||null}}
-function injectUploaders(body:any,users:any[]){
-  const fix=(item:any)=>{if(!item||typeof item!=='object'||item.uploader||typeof item.title!=='string'||typeof item.sourceKey!=='string')return;const composite=typeof item.id==='string'&&item.id.includes(':')?item.id:typeof item.videoId==='string'?`${item.sourceKey}:${item.videoId}`:null;if(!composite)return;const uploader=pickUploader(users,composite);if(uploader)item.uploader=uploader;if(Array.isArray(item.variants))item.variants.forEach(fix);};
-  if(Array.isArray(body))body.forEach(fix);
-  else if(body&&typeof body==='object'){if(Array.isArray(body.items))body.items.forEach(fix);else fix(body);}
-  return body;
-}
+// Display personas are independent from login accounts; persisted video mappings
+// remain stable when the virtual-persona pool changes.
+const virtualUploaders=createVirtualUploaderService(db);
 const loginAttempts=new Map<string,{at:number;count:number}>();
 // Central API gate runs before every content/configuration route, including legacy endpoints.
 app.use('/api',async(req:any,res:any,next:any)=>{
@@ -76,12 +68,17 @@ app.use('/api',async(req:any,res:any,next:any)=>{
     const key=String(req.body?.sourceKey||'');if(!key||!canSource(user,key)||!await db.source.findFirst({where:{key,enabled:true}}))return res.status(403).json({error:'数据源不可用或未授权'});
   }
   if(req.method==='GET'&&!/^\/api\/(admin|auth|membership|profile|install|settings|config|access|health)(\/|$)/.test(route)){
-    const uploaders=await uploaderPool();
-    if(uploaders.length){const sendJson=res.json.bind(res);res.json=(body:any)=>{try{injectUploaders(body,uploaders)}catch{}return sendJson(body)};}
+    const sendJson=res.json.bind(res);
+    res.json=(body:any)=>{
+      // Attribution is optional decoration: a failure must not block playback.
+      void virtualUploaders.enrich(body).then(sendJson,()=>sendJson(body));
+      return res;
+    };
   }
   next();
 });
 registerMembership(app,db,{requireUser,requireAdmin,hashPassword},membership);
+registerVirtualUploaders(app,db,{requireAdmin},virtualUploaders);
 registerUpdates(app,{requireAdmin,checkPassword});
 registerLive(app,db,{requireUser,requireAdmin});
 const page=(p:any)=>Math.max(1,Number(p)||1); const size=(p:any)=>Math.min(100,Math.max(1,Number(p)||24));

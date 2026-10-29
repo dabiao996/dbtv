@@ -8,23 +8,25 @@ import {createAccount,validPassword} from './identity.js';
 
 const tools=require('../../scripts/web-database.cjs');
 
-// Transient engine/connection failures (SQLite write contention, pool
-// timeouts, brief disconnects) used to surface as one-off 500s on whichever
-// call happened to lose the race — a login once failed with P1008 while the
-// membership wallet retried the same code. Retry them in one shared layer so
-// every model operation gets the same bounded behavior.
-const TRANSIENT_PRISMA_CODES=new Set(['P1001','P1002','P1008','P2024','P2028','P2034']);
+// Replay only known read-only model operations. A timeout/disconnect can occur
+// after a write committed, so retrying create/update (including increments),
+// or raw SQL of unknown intent, can duplicate effects. Transaction failures
+// P2028/P2034 belong to the caller's whole-transaction recovery policy, never
+// to an individual query retry (membership has its own idempotent recovery).
+const TRANSIENT_READ_CODES=new Set(['P1001','P1002','P1008','P2024']);
+const READ_ONLY_MODEL_OPERATIONS=new Set(['findUnique','findUniqueOrThrow','findFirst','findFirstOrThrow','findMany','count','aggregate','groupBy']);
 export function withTransientRetry(client:any){
   return client.$extends({
     name:'transient-retry',
     query:{
-      async $allOperations({args,query}:{args:any;query:(args:any)=>Promise<any>}){
+      async $allOperations({model,operation,args,query}:{model?:string;operation:string;args:any;query:(args:any)=>Promise<any>}){
+        if(!model||!READ_ONLY_MODEL_OPERATIONS.has(operation))return query(args);
         let lastError:any;
         for(let attempt=0;attempt<3;attempt++){
           try{return await query(args);}
           catch(error:any){
             lastError=error;
-            if(!TRANSIENT_PRISMA_CODES.has(error?.code)||attempt===2)throw error;
+            if(!TRANSIENT_READ_CODES.has(error?.code)||attempt===2)throw error;
             await new Promise(resolve=>setTimeout(resolve,40*(attempt+1)+Math.floor(Math.random()*30)));
           }
         }
