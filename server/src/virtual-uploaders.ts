@@ -6,6 +6,7 @@ class VirtualUploaderError extends Error {constructor(public status:number,messa
 const fail=(status:number,message:string):never=>{throw new VirtualUploaderError(status,message)};
 const batchId=(requestId:string)=>hash(['virtual-uploader-batch',requestId]);
 const profileId=(batch:string,index:number)=>hash([batch,index]);
+const DISPLAY_NAMES=['花开富贵','月下听风','星河漫游','清风徐来','山海有期','青梅煮酒','南风知我意','CinemaSoul','BlueOrbit','MidnightCat','PixelVoyager','LuckySeven'];
 export function virtualVideoKey(item:any):string|null{
   if(!item||typeof item.title!=='string'||typeof item.sourceKey!=='string'||!item.sourceKey||item.sourceKey.length>191)return null;
   let id=item.videoId??item.id;
@@ -32,15 +33,22 @@ export function virtualProfileInput(body:any){
 
 export function createVirtualUploaderService(db:any){
   const list=()=>db.virtualUploader.findMany({orderBy:[{createdAt:'asc'},{id:'asc'}]});
+  async function clear(){
+    return db.$transaction(async(tx:any)=>{
+      const attributions=await tx.videoAttribution.deleteMany({});
+      const profiles=await tx.virtualUploader.deleteMany({});
+      return {attributions:attributions.count,profiles:profiles.count};
+    });
+  }
   async function generate(body:any){
     if(!Number.isInteger(body?.count)||body.count<1||body.count>100||typeof body.requestId!=='string'||!/^[a-zA-Z0-9_-]{16,80}$/.test(body.requestId))return fail(400,'每批生成 1–100 个虚拟展示用户，并提供有效请求标识');
     const id=batchId(body.requestId),count=body.count,ids=Array.from({length:count},(_,i)=>profileId(id,i));
-    const replay=async()=>{const batch=await db.virtualUploaderBatch.findUnique({where:{id}});if(!batch)return null;if(batch.count!==count)return fail(409,'同一请求标识不能用于不同生成数量');return {items:await db.virtualUploader.findMany({where:{id:{in:ids}},orderBy:{id:'asc'}}),replayed:true};};
+    const replay=async()=>{const batch=await db.virtualUploaderBatch.findUnique({where:{id}});if(!batch)return null;if(batch.count!==count)return fail(409,'同一请求标识不能用于不同生成数量');const items=await db.virtualUploader.findMany({where:{id:{in:ids}},orderBy:{id:'asc'}});return {items,replayed:true,cleared:items.length===0};};
     const previous=await replay();if(previous)return previous;
     try{return await db.$transaction(async(tx:any)=>{
       await tx.virtualUploaderBatch.create({data:{id,count}});
       // Stable IDs make the transaction safe to recover after an uncertain commit.
-      await tx.virtualUploader.createMany({data:ids.map(profile=>({id:profile,name:`虚拟影友 ${profile.slice(0,8)}`,avatarUrl:null,enabled:true}))});
+      await tx.virtualUploader.createMany({data:ids.map((profile,index)=>({id:profile,name:DISPLAY_NAMES[index%DISPLAY_NAMES.length]+(index>=DISPLAY_NAMES.length?` · ${profile.slice(0,5)}`:''),avatarUrl:null,enabled:true}))});
       const items=await tx.virtualUploader.findMany({where:{id:{in:ids}},orderBy:{id:'asc'}});
       return {items,replayed:false};
     });}catch(error:any){
@@ -85,7 +93,7 @@ export function createVirtualUploaderService(db:any){
     for(const [key,rows] of videos){const profile=assigned.get(key)?.uploader;if(profile?.enabled)for(const item of rows)item.uploader={name:profile.name,avatarUrl:profile.avatarUrl,virtual:true};}
     return body;
   }
-  return {list,generate,update,enrich};
+  return {list,generate,update,clear,enrich};
 }
 
 export function registerVirtualUploaders(app:Express,db:any,auth:{requireAdmin:(req:any,res:any)=>Promise<any>},service=createVirtualUploaderService(db)){
@@ -96,5 +104,6 @@ export function registerVirtualUploaders(app:Express,db:any,auth:{requireAdmin:(
   app.get('/api/admin/virtual-uploaders',route(async()=>({items:await service.list()})));
   app.post('/api/admin/virtual-uploaders/generate',route(req=>service.generate(req.body)));
   app.put('/api/admin/virtual-uploaders/:id',route(req=>service.update(String(req.params.id),req.body)));
+  if(typeof (app as any).delete==='function')(app as any).delete('/api/admin/virtual-uploaders',route(()=>service.clear()));
   return service;
 }

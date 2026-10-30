@@ -65,7 +65,7 @@ export function registerCatalog(app:Express,db:any,auth:{requireUser:any},reques
     const pageNumbers=Array.from({length:Math.max(0,Math.min(window.last,upstreamPages)-window.first)},(_,index)=>window.first+index+1);
     const following=await Promise.all(pageNumbers.map(page=>{const params=new URLSearchParams(query.params);params.set('page',String(page));return load(query.path,params)}));
     const raw=[first,...following].flatMap(data=>data.results).slice(window.skip,window.skip+paging.pageSize),seen=new Set<number>();
-    const items=raw.flatMap((row,index)=>catalogItems([row],query.type,1).map(item=>({...item,rank:window.offset+index+1}))).filter(item=>{if(seen.has(item.id))return false;seen.add(item.id);return true});
+    const items=raw.flatMap(row=>catalogItems([row],query.type,1)).filter(item=>{if(seen.has(item.id))return false;seen.add(item.id);return true}).map((item,index)=>({...item,rank:window.offset+index+1}));
     res.json({provider:'TMDB',...query,params:undefined,page:paging.page,pageSize:paging.pageSize,items,total,totalPages,hasMore:paging.page<totalPages,note:query.note+(reportedTotal>total?' TMDB 限制为前500个上游分页，数量为当前可翻页范围。':''),reportedTotal});
   }catch{res.status(503).json({error:'TMDB 榜单暂时不可用，请在后台测试令牌连接，或稍后重试。源内资源仍可正常浏览。'})}});
 }

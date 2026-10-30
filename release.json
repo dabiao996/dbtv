@@ -1,5 +1,6 @@
 {
-  "version": "1.0.2",
+  "version": "1.0.3",
   "channel": "development",
-  "revision": "local"
+  "revision": "local",
+  "dataContract": "1ffd5f63f48da1b66c965e7cfce4cbcb7be3b9d76e8650ac4ffc33af5c5f646d"
 }

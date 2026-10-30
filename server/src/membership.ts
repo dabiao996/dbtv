@@ -1,5 +1,5 @@
 import type {Express} from 'express';
-import {createHash} from 'node:crypto';
+import {createHash,randomBytes} from 'node:crypto';
 import {backfillMemberNumbers,ensureMemberNumber,createAccount,accountSearchWhere,validPassword} from './identity.js';
 import {readContentRules,validateContentRules,readCategoryRules} from './content-policy.js';
 
@@ -33,7 +33,7 @@ export function effectiveMembership(user:any,free:any,now=new Date(),groups:any[
   const active=!!(user.membershipPlan?.enabled&&user.membershipPlanId!==FREE_PLAN&&user.membershipExpiresAt&&new Date(user.membershipExpiresAt)>now);
   // The synthetic guest account carries the dedicated guest plan; it never
   // expires and never falls back to the registered-user free plan.
-  const guestPlan=user?.membershipPlanId===GUEST_PLAN&&user?.membershipPlan?.id===GUEST_PLAN?user.membershipPlan:null;
+  const guestPlan=user?.guest===true&&user?.membershipPlanId===GUEST_PLAN&&user?.membershipPlan?.id===GUEST_PLAN?user.membershipPlan:null;
   const plan=guestPlan||(active?user.membershipPlan:free);
   const admin=user.role==='admin';
   const contentRules=admin?readContentRules(null):readContentRules(plan.contentRules);
@@ -199,7 +199,26 @@ export function createMembershipService(db:any,clock=()=>new Date()){
       return {ok:true,replayed:false,entry};
     });
   }
-  return {ready,hydrate,guest,summary,wallet,savePlan,saveGroup,validateGroups,adjust,redeem};
+  async function assign(actor:any,userId:number,body:any){
+    if(actor.role!=='admin')reject(403,'需要管理员权限');await ready();
+    const planId=typeof body?.planId==='string'?body.planId.trim():'';
+    if(!Number.isInteger(userId)||userId<1||!planId||planId.length>191)reject(400,'请选择有效账号和会员等级');
+    const plan=await db.membershipPlan.findUnique({where:{id:planId}});if(!plan)reject(404,'会员等级不存在');
+    if(plan.id===GUEST_PLAN)reject(400,'游客等级仅用于未登录访客，不能分配给真实账号');
+    if(plan.id!==FREE_PLAN&&plan.id!==GUEST_PLAN&&!plan.enabled)reject(400,'只能指定已上架的会员等级');
+    let expiresAt:any=null;
+    if(plan.id!==FREE_PLAN&&plan.id!==GUEST_PLAN){
+      if(body.expiresAt){const parsed=new Date(body.expiresAt);if(!Number.isFinite(parsed.getTime())||parsed.getTime()<clock().getTime()||parsed.getTime()>clock().getTime()+3650*DAY)reject(400,'到期时间必须在现在至3650天内');expiresAt=parsed;}
+      else expiresAt=new Date(clock().getTime()+plan.durationDays*DAY);
+    }
+    return db.$transaction(async(tx:any)=>{
+      const target=await tx.user.findUnique({where:{id:userId},select:{id: true,username:true,membershipPlanId:true,membershipExpiresAt:true}});if(!target)reject(404,'用户不存在');
+      await tx.user.update({where:{id:userId},data:{membershipPlanId:plan.id,membershipExpiresAt:expiresAt}});
+      await tx.adminLog.create({data:{userId:actor.id,action:'membership.user.assign',detail:JSON.stringify({targetId:userId,planId:plan.id,planName:plan.name,expiresAt,previousPlanId:target.membershipPlanId,previousExpiresAt:target.membershipExpiresAt})}});
+      return {ok:true,userId,planId:plan.id,planName:plan.name,expiresAt};
+    });
+  }
+  return {ready,hydrate,guest,summary,wallet,savePlan,saveGroup,validateGroups,adjust,assign,redeem};
 }
 
 export function registerMembership(app:Express,db:any,auth:{requireUser:any;requireAdmin:any;hashPassword:any},service=createMembershipService(db)){
@@ -212,6 +231,7 @@ export function registerMembership(app:Express,db:any,auth:{requireUser:any;requ
   app.post('/api/admin/membership/plans',run(async(req:any,res:any)=>{const u=await auth.requireAdmin(req,res);if(u)res.status(201).json(await service.savePlan(u,undefined,req.body||{}));}));
   app.put('/api/admin/membership/plans/:id',run(async(req:any,res:any)=>{const u=await auth.requireAdmin(req,res);if(u)res.json(await service.savePlan(u,req.params.id,req.body||{}));}));
   app.post('/api/admin/membership/users/:id/points',run(async(req:any,res:any)=>{const u=await auth.requireAdmin(req,res);if(!u)return;rate(`grant:${u.id}`,40);res.json(await service.adjust(u,Number(req.params.id),req.body||{}));}));
+  app.post('/api/admin/membership/users/:id/plan',run(async(req:any,res:any)=>{const u=await auth.requireAdmin(req,res);if(!u)return;res.json(await service.assign(u,Number(req.params.id),req.body||{}));}));
   app.get('/api/admin/member-search',run(async(req:any,res:any)=>{
     if(!await auth.requireAdmin(req,res))return;await service.ready();const q=String(req.query.q||'').trim().slice(0,80),page=Math.max(1,Math.min(5000,Number(req.query.page)||1));if(!Number.isInteger(page))reject(400,'页码无效');
     const where=accountSearchWhere(q),[items,total]=await Promise.all([db.user.findMany({where,select:{id:true,memberNo:true,username:true,displayName:true,points:true,enabled:true,role:true},orderBy:{id:'desc'},skip:(page-1)*20,take:20}),db.user.count({where})]);res.json({items,total,page,pageSize:20,hasMore:page*20<total});
@@ -225,7 +245,9 @@ export function registerMembership(app:Express,db:any,auth:{requireUser:any;requ
     const username=typeof req.body?.username==='string'?req.body.username.trim():'';const password=typeof req.body?.password==='string'?req.body.password:'';
     if(!/^[a-zA-Z0-9_-]{3,32}$/.test(username)||!validPassword(password)||password!==req.body.confirmPassword)reject(400,'账号需为3–32位字母数字或下划线短横线，密码需为6–128位且两次一致');
     const user=await createAccount(db,{username,passwordHash:auth.hashPassword(password),role:'user',points:0});
-    res.status(201).json({ok:true,id:user.id,memberNo:user.memberNo,message:'注册成功，请登录'});
+    const token=randomBytes(32).toString('hex');await db.session.create({data:{token,userId:user.id,expiresAt:new Date(Date.now()+30*24*60*60*1000)}});
+    res.setHeader('Set-Cookie',`webtv_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${req.secure||process.env.COOKIE_SECURE==='true'?'; Secure':''}`);
+    res.status(201).json({ok:true,id:user.id,memberNo:user.memberNo,message:'注册成功，已自动登录'});
   }));
   return service;
 }

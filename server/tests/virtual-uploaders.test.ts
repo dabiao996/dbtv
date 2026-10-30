@@ -37,7 +37,7 @@ test('virtual uploader batches and assignments persist independently of real acc
     const requestId=randomUUID();
     const batch=await service.generate({count:2,requestId});
     assert.equal(batch.items.length,2);assert.equal(batch.replayed,false);
-    assert(batch.items.every((item:any)=>item.name.startsWith('虚拟影友 ')));
+    assert(batch.items.every((item:any)=>item.name&&!item.name.startsWith('虚拟影友 ')));
     const replay=await service.generate({count:2,requestId});assert.equal(replay.replayed,true);
     assert.deepEqual(replay.items.map((x:any)=>x.id),batch.items.map((x:any)=>x.id));
     await assert.rejects(service.generate({count:3,requestId}),/同一请求标识/);

@@ -39,6 +39,11 @@ export default function Membership(){
 
 const blankPlan=()=>({id:'',name:'',description:'',pricePoints:300,durationDays:30,enabled:false,permissions:['home','sources','search','playback','favorites','history','recommendations','discover','danmaku'],sourceKeys:[] as string[],accessGroupIds:[] as string[],allSources:false,contentRules:readRules(null),version:0});
 const planDraft=(plan:any)=>({...plan,permissions:parse(plan.permissions),sourceKeys:parse(plan.sourceKeys),accessGroupIds:parse(plan.accessGroupIds),contentRules:readRules(plan.contentRules)});
+function MembershipAssignment({plans,disabled,onDone}:{plans:any[];disabled:boolean;onDone:()=>void}){
+  const [recipient,setRecipient]=useState<PickerAccount|null>(null),[planId,setPlanId]=useState('free'),[expiresAt,setExpiresAt]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState('');
+  async function submit(event:React.FormEvent){event.preventDefault();if(disabled||!recipient)return;setError('');setMessage('');try{const result=await request('/admin/membership/users/'+recipient.id+'/plan',{planId,...expiresAt?{expiresAt:new Date(expiresAt).toISOString()}:{} });setMessage(`已将 ${recipient.username} 设置为「${result.planName}」。${result.expiresAt?'到期：'+date(result.expiresAt):'无到期时间'}`);onDone()}catch(e:any){setError(e.message)}}
+  return <form className="member-panel member-form" onSubmit={submit}><h2>手动指定用户会员等级</h2><p className="member-muted">管理员可将指定账号设置为任意已上架等级；此操作不扣积分，并记录管理员审计日志。付费等级未填写到期时间时按等级天数计算。</p><AccountPicker value={recipient} disabled={disabled} onChange={setRecipient}/><label>会员等级<select value={planId} disabled={disabled} onChange={e=>setPlanId(e.target.value)}>{plans.map(plan=><option key={plan.id} value={plan.id} disabled={plan.id!=='free'&&plan.id!=='guest'&&!plan.enabled}>{plan.name}{plan.id!=='free'&&!plan.enabled?'（未上架）':''}</option>)}</select></label>{planId!=='free'&&planId!=='guest'&&<label>到期时间（可选）<input type="datetime-local" value={expiresAt} disabled={disabled} onChange={e=>setExpiresAt(e.target.value)}/></label>}<div className="member-actions"><button className="primary" disabled={disabled||!recipient}>{disabled?'处理中…':'保存等级'}</button></div>{error&&<p role="alert" className="member-error">{error}</p>}{message&&<p role="status" className="member-success">{message}</p>}</form>;
+}
 export function MembershipAdmin(){
   const [data,setData]=useState<any>(),[draft,setDraft]=useState<any>(blankPlan),[tab,setTab]=useState('plans'),[error,setError]=useState(''),[message,setMessage]=useState(''),[busy,setBusy]=useState(false),[gift,setGift]=useState({userId:'',delta:100,reason:''}),[recipient,setRecipient]=useState<PickerAccount|null>(null);
   const operation=useRef({signature:'',id:''});
@@ -56,6 +61,7 @@ export function MembershipAdmin(){
   }
   return <div className="member-admin">
     <div className="member-compact-stats"><span>账号 {data?.stats?.totalUsers??'—'}</span><span>有效会员 {data?.stats?.activeMembers??'—'}</span><span>套餐 {data?.stats?.enabledPlans??'—'}</span></div>
+    {data&&<MembershipAssignment plans={data.plans} disabled={busy} onDone={()=>{void load()}}/>}
     <div className="member-tabs">{[['plans','套餐与权限'],['points','赠送 / 调整积分'],['groups','源分组'],['ledger','积分流水']].map(([key,label])=><button key={key} aria-pressed={tab===key} onClick={()=>{setTab(key);setError('');setMessage('')}}>{label}</button>)}</div>
     {error&&<p role="alert" className="member-error">{error}</p>}{message&&<p role="status" className="member-success">{message}</p>}
     {!data?<p>正在读取会员设置…</p>:tab==='plans'?<div className="member-admin-grid">
@@ -83,6 +89,7 @@ export function MembershipAdmin(){
 
 export function Register({settings}:{settings:Record<string,string>}){
   const [form,setForm]=useState({username:'',password:'',confirmPassword:''}),[error,setError]=useState(''),[busy,setBusy]=useState(false),[done,setDone]=useState(false);
+  useEffect(()=>{if(done)window.location.assign('/')},[done]);
   return <div className="login-screen"><div className="login-backdrop"/><form className="login-panel" onSubmit={async event=>{event.preventDefault();setBusy(true);setError('');try{await request('/auth/register',form);setDone(true);setForm({username:'',password:'',confirmPassword:''})}catch(e:any){setError(e.message)}finally{setBusy(false)}}}><Link className="login-logo" to="/login"><img src={settings.logoUrl||'/images/dabiao-logo.svg'} alt={settings.siteName||'大彪TV'}/></Link><h1>创建账号</h1>{done?<><p role="status">注册成功，初始积分为0，请登录后查看会员权益。</p><Link to="/login">前往登录 →</Link></>:settings.allowRegister!=='true'?<><p>暂未开放注册，请联系管理员。</p><Link to="/login">返回登录</Link></>:<><label>用户名<input required pattern="[A-Za-z0-9_-]{3,32}" minLength={3} maxLength={32} autoComplete="username" value={form.username} onChange={e=>setForm({...form,username:e.target.value})}/></label><label>密码<input required type="password" minLength={6} maxLength={128} autoComplete="new-password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/></label><label>确认密码<input required type="password" minLength={6} maxLength={128} autoComplete="new-password" value={form.confirmPassword} onChange={e=>setForm({...form,confirmPassword:e.target.value})}/></label><button className="primary wide" disabled={busy}>{busy?'正在注册…':'注册普通账号'}</button><p><Link to="/login">已有账号？登录</Link></p></>}{error&&<p role="alert" className="member-error">{error}</p>}</form></div>;
 }
 

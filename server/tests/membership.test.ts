@@ -35,6 +35,12 @@ test('plan expiry falls back to ordinary permissions; admin rights cannot be bou
   assert.deepEqual(effectiveMembership(sample,free,new Date('2026-11-02')).permissions,['home']);
   assert.deepEqual(effectiveMembership({...sample,role:'admin'},free).permissions,permissionKeys);
 });
+test('guest plan is reserved for the synthetic guest identity',()=>{
+  const free={id:'free',name:'普通用户',permissions:'["home"]',sourceKeys:'[]',allSources:false};
+  const guest={role:'user',guest:true,sourceAccess:[],accessGroupIds:null,membershipPlanId:'guest',membershipPlan:{id:'guest',name:'游客',enabled:true,permissions:'["playback"]',sourceKeys:'[]',allSources:true},membershipExpiresAt:null};
+  assert.equal(effectiveMembership(guest,free).membership.planId,'guest');
+  assert.equal(effectiveMembership({...guest,guest:false},free).membership.planId,'free');
+});
 test('permissions cover legacy direct-source search, detail URLs and playback alternatives',()=>{
   for(const path of ['/api/sources/x/videos/x:1','/api/playback-options','/api/playback-errors'])assert.equal(permissionForApi(path),'playback');
   assert.equal(permissionForApi('/api/sources/x/search'),'search');

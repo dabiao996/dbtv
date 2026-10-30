@@ -15,12 +15,14 @@ export default function AIEnhancer({videoRef}: {videoRef: React.RefObject<HTMLVi
 
   const toggleContainerFullscreen = useCallback(async () => {
     const shell = canvasRef.current?.parentElement;
+    const video = shell?.querySelector('video') as (HTMLVideoElement & {webkitEnterFullscreen?: () => void}) | null;
     try {
       if (document.fullscreenElement === shell) await document.exitFullscreen();
       else if (shell?.requestFullscreen) await shell.requestFullscreen();
-      else setStatus(previous => ({...previous, message: '此设备不支持播放器容器全屏；视频原生全屏无法显示增强画布'}));
+      else if (video?.webkitEnterFullscreen) video.webkitEnterFullscreen();
+      else setStatus(previous => ({...previous, message: '此设备不支持播放器容器或视频原生全屏，请使用系统浏览器或横屏播放'}));
     } catch {
-      setStatus(previous => ({...previous, message: '播放器容器全屏失败；视频原生全屏无法显示增强画布'}));
+      setStatus(previous => ({...previous, message: '播放器全屏失败，请使用视频原生控件或系统浏览器'}));
     }
   }, []);
 

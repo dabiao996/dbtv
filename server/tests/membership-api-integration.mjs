@@ -51,6 +51,7 @@ test('real HTTP membership flow enforces privileges, source restrictions, expiry
     assert.equal((await call(detailPath)).data.uploader,undefined,'disabled persona hides decoration');
     assert.equal((await call('/admin/virtual-uploaders/'+assigned.id,{cookie:adminCookie,method:'PUT',body:{name:'虚拟影友测试',avatarUrl:null,enabled:true}})).status,200);
     assert.equal((await call(detailPath)).data.uploader.name,'虚拟影友测试','same assignment returns when enabled');
+    const cleared=await call('/admin/virtual-uploaders',{cookie:adminCookie,method:'DELETE',body:{confirm:true}});assert.equal(cleared.status,200);assert.equal(cleared.data.profiles,5);assert.equal((await call('/admin/virtual-uploaders',{cookie:adminCookie})).data.items.length,0);assert.equal((await call(detailPath)).data.uploader,undefined,'clearing virtual users removes virtual attribution only');const clearedReplay=await call('/admin/virtual-uploaders/generate',{cookie:adminCookie,body:batchRequest});assert.equal(clearedReplay.status,200);assert.equal(clearedReplay.data.replayed,true);assert.equal(clearedReplay.data.cleared,true);assert.equal(clearedReplay.data.items.length,0,'a delayed old batch never regenerates after clear');
     assert.equal(await db.user.count(),accountsBefore,'virtual personas never become login accounts');
     // Guest grants are editable by source/category and can be disabled without paid fields.
     const guestPlan=(await call('/admin/membership',{cookie:adminCookie})).data.plans.find(x=>x.id==='guest');
@@ -68,6 +69,7 @@ test('real HTTP membership flow enforces privileges, source restrictions, expiry
     assert.equal((await call('/settings',{cookie:adminCookie,body:{allowRegister:'true'}})).status,200);
     assert.equal((await call('/auth/register',{body:{username:'too_short',password:'abc12',confirmPassword:'abc12'}})).status,400);
     const registered=await call('/auth/register',{body:{username:'fixture_user',password:'abc123',confirmPassword:'abc123',role:'admin',points:999999,membershipPlanId:'fake',memberNo:'DTV-FORGED'}});assert.equal(registered.status,201);
+    assert.ok(registered.cookie,'registration creates a session cookie');assert.equal((await call('/auth/me',{cookie:registered.cookie})).data.username,'fixture_user');
     const userId=registered.data.id;
     assert.match(registered.data.memberNo,/^DTV-[A-F0-9]{12}$/);
     const login=await call('/auth/login',{body:{username:'fixture_user',password:'abc123'}});assert.equal(login.status,200);userCookie=login.cookie;
@@ -94,6 +96,9 @@ test('real HTTP membership flow enforces privileges, source restrictions, expiry
     assert.equal((await call(`/admin/membership/users/${userId}/points`,{cookie:adminCookie,body:gift})).status,200);
     assert.equal((await call(`/admin/membership/users/${userId}/points`,{cookie:adminCookie,body:gift})).data.replayed,true);
     const plan=await call('/admin/membership/plans',{cookie:adminCookie,body:{name:'测试VIP',description:'仅供集成测试',pricePoints:100,durationDays:30,permissions:['sources','playback','search'],sourceKeys:['premium'],allSources:false,enabled:true}});assert.equal(plan.status,201);
+    const guestAssignment=await call(`/admin/membership/users/${userId}/plan`,{cookie:adminCookie,body:{planId:'guest'}});assert.equal(guestAssignment.status,400);
+    assert.equal((await call(`/admin/membership/users/${userId}/plan`,{cookie:userCookie,body:{planId:plan.data.id}})).status,403);
+    const manuallyAssigned=await call(`/admin/membership/users/${userId}/plan`,{cookie:adminCookie,body:{planId:plan.data.id}});assert.equal(manuallyAssigned.status,200,JSON.stringify(manuallyAssigned.data));assert.equal(manuallyAssigned.data.planId,plan.data.id);assert.ok(manuallyAssigned.data.expiresAt);
     const redeem={planId:plan.data.id,expectedVersion:plan.data.version,pricePoints:0,userId:1,requestId:randomUUID()};
     assert.equal((await call('/membership/redeem',{cookie:userCookie,body:redeem})).status,200);
     assert.equal((await call('/membership/redeem',{cookie:userCookie,body:redeem})).data.replayed,true);
